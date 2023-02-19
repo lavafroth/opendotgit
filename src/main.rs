@@ -1,5 +1,9 @@
+use url_path::UrlPath;
+
 use clap::Parser;
 use color_eyre::{eyre::eyre, eyre::WrapErr, Section};
+use regex::Regex;
+use soup::prelude::*;
 
 use color_eyre::eyre::Result;
 use reqwest::header::CONTENT_TYPE;
@@ -33,39 +37,92 @@ fn verify_response(response: &Response) -> Result<()> {
     if response.content_length() == Some(0) {
         Err(eyre!("{url} responded with content-length equal to zero"))?
     }
-    if let Some(content_type) = response.headers().get(CONTENT_TYPE) {
-        if content_type == "text/html" {
-            Err(eyre!("{url} responded with HTML"))?
-        }
+    if is_html(response) {
+        Err(eyre!("{url} responded with HTML"))?
     }
     Ok(())
 }
 
-fn parse_url(url: &Url) -> Url {
-    let mut url = url.clone();
+fn is_html(response: &Response) -> bool {
+    if let Some(content_type) = response.headers().get(CONTENT_TYPE) {
+        if content_type == "text/html" {
+            return true;
+        }
+    }
+    false
+}
+
+fn normalize_url(url: &mut Url) {
     // If there are segments in the URL,
     // check if any of them equal ".git"
     if let Some(segments) = url.path_segments().map(|c| c.collect::<Vec<_>>()) {
         // Find the last ".git" path segment and use the URL till
         // that segment without including it.
-        if let Some(index) = segments.iter().position(|&segment| segment == ".git") {
-            println!("{}", index);
-            url.set_path(&segments[0..index].join("/"));
-        }
+        let path = if let Some(index) = segments.iter().position(|&segment| segment == ".git") {
+            segments[0..index].join("/")
+        } else {
+            String::from(url.path())
+        };
+        url.set_path(path.trim_end_matches('/'));
         // If there were no ".git" segments, an omitted ".git" segment after
         // the given path is assumed.
     };
     // If there are no segments, an omitted ".git" segment after the URL is assumed.
-    url
+}
+fn get_indexed_files(text: &str) -> Vec<String> {
+    let soup = Soup::new(text);
+    soup.tag("a")
+        .find_all()
+        .filter_map(|a| match a.get("href") {
+            Some(href) => {
+                let normalized = UrlPath::new(&href).normalize();
+                if normalized.starts_with(['/', '?']) {
+                    None
+                } else {
+                    Some(normalized)
+                }
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
 }
 
-async fn fetch_head(url: &Url) -> Result<()> {
-    let mut url = parse_url(url);
-    url.set_path(&format!("{}/.git/HEAD", url.path()));
+async fn fetch_head(mut url: Url) -> Result<()> {
+    normalize_url(&mut url);
+
+    url.path_segments_mut()
+        .map_err(|_| eyre!("Supplied URL cannot be an absolute URL"))?
+        .push(".git")
+        .push("HEAD");
+
     let client = reqwest::Client::new();
-    let res = client.get(url).send().await?;
+
+    let res = client.get(url.clone()).send().await?;
     verify_response(&res)?;
-    println!("{:#?}", res.text().await?);
+
+    let re = Regex::new(r"^(ref:.*|[0-9a-f]{40}$)")?;
+    let text = res.text().await?;
+    if !re.is_match(text.trim()) {
+        Err(eyre!("{} is not a git HEAD", url.as_str()))?
+    }
+
+    url.path_segments_mut()
+        .map_err(|_| eyre!("Supplied URL cannot be an absolute URL"))?
+        .pop();
+
+    println!("Testing {}", url.as_str());
+
+    let res = client.get(url.clone()).send().await?;
+    if is_html(&res) {
+        println!("warn: {url} responsed without Content-Type: text/html")
+    }
+    let text = res.text().await?;
+    if get_indexed_files(&text)
+        .iter()
+        .any(|filename| filename == "HEAD")
+    {
+        println!("nice");
+    }
     Ok(())
 }
 
@@ -76,6 +133,6 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&cli.output)
         .wrap_err("Failed to create output directory")
         .suggestion("Try supplying a location you can write to")?;
-    fetch_head(&cli.url).await?;
+    fetch_head(cli.url.clone()).await?;
     Ok(())
 }
