@@ -1,10 +1,11 @@
-use std::{io::Cursor, path::PathBuf};
+use std::io::Cursor;
 
-use clap::Parser;
+use clap::{ArgAction::Count, Parser};
 use color_eyre::{eyre::eyre, eyre::WrapErr, Section};
 use futures::{stream, StreamExt};
 use hyper::{
     client::{connect::dns::GaiResolver, HttpConnector},
+    header::{CONTENT_LENGTH, CONTENT_TYPE},
     Body, Client, Response, StatusCode,
 };
 use hyper_tls::HttpsConnector;
@@ -22,15 +23,15 @@ struct Cli {
     url: Url,
 
     /// Directory to output the results
-    output: PathBuf,
+    output: String,
 
     /// Number of asynchronous jobs to spawn
     #[arg(short, long, default_value_t = 8)]
     tasks: usize,
 
     /// Turn debugging information on
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    debug: u8,
+    #[arg(short, long, action = Count)]
+    verbose: u8,
 }
 
 fn verify_response(response: &Response<Body>) -> Result<()> {
@@ -38,50 +39,34 @@ fn verify_response(response: &Response<Body>) -> Result<()> {
     if status != 200 {
         Err(eyre!("Responded with status code {status}"))?
     }
-    let content_length = response.headers().get("Content-Length");
-    if let Some(l) = content_length {
-        if l.to_str()?.parse::<u16>() == Ok(0) {
+    if let Some(content_length) = response.headers().get(CONTENT_LENGTH) {
+        if content_length.to_str()?.parse::<u16>() == Ok(0) {
             Err(eyre!("Responded with content-length equal to zero"))?
         }
     }
 
     if is_html(response) {
-        return Err(eyre!("Responded with HTML"));
+        Err(eyre!("Responded with HTML"))?
     }
     Ok(())
 }
 
 fn is_html(response: &Response<Body>) -> bool {
-    if let Some(content_type) = response.headers().get("Content-Type") {
-        if let Ok(ct_type) = content_type.to_str() {
-            if ct_type == "text/html" {
-                return true;
-            }
-        }
-    }
-    false
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .map(|content_type| {
+            content_type
+                .to_str()
+                .map(|t| t == "text/html")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
-fn normalize_url(url: &mut Url) {
-    // If there are segments in the URL,
-    // check if any of them equal ".git"
-    if let Some(segments) = url.path_segments().map(|c| c.collect::<Vec<_>>()) {
-        // Find the last ".git" path segment and use the URL till
-        // that segment without including it.
-        let path = if let Some(index) = segments.iter().position(|&segment| segment == ".git") {
-            segments[0..index].join("/")
-        } else {
-            String::from(url.path())
-        };
-        url.set_path(path.trim_end_matches('/'));
-        // If there were no ".git" segments, an omitted ".git" segment after
-        // the given path is assumed.
-    };
-    // If there are no segments, an omitted ".git" segment after the URL is assumed.
-}
 fn get_indexed_files(text: &str) -> Vec<String> {
-    let soup = Soup::new(text);
-    soup.tag("a")
+    Soup::new(text)
+        .tag("a")
         .find_all()
         .filter_map(|a| match a.get("href") {
             Some(href) => {
@@ -97,10 +82,27 @@ fn get_indexed_files(text: &str) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-async fn fetch_head(mut url: Url, output: &PathBuf, n_tasks: usize) -> Result<()> {
-    normalize_url(&mut url);
+async fn fetch_head(mut url: Url, n_tasks: usize) -> Result<()> {
+    // If there are segments in the URL,
+    // check if any of them equal ".git"
+    if let Some(segments) = url.path_segments().map(|c| c.collect::<Vec<_>>()) {
+        // Find the last ".git" path segment and use the URL till
+        // that segment without including it.
+        url.set_path(
+            segments
+                .iter()
+                .position(|&segment| segment == ".git")
+                .map(|index| segments[0..index].join("/"))
+                .unwrap_or(String::from(url.path()))
+                .trim_end_matches('/'),
+        );
+        // If there were no ".git" segments, an omitted ".git" segment after
+        // the given path is assumed.
+    };
+    // If there are no segments, an omitted ".git" segment after the URL is assumed.
 
-    let mut url = url.clone();
+    let orig_url = url;
+    let mut url = orig_url.clone();
     let mut segments = url
         .path_segments()
         .ok_or_else(|| eyre!("Supplied URL cannot be an absolute URL"))?
@@ -114,9 +116,11 @@ async fn fetch_head(mut url: Url, output: &PathBuf, n_tasks: usize) -> Result<()
     let res = client.get(url_string.parse()?).await?;
     verify_response(&res).wrap_err(format!("While fetching {url}"))?;
 
+    // TODO: consider making this lazy_static
     let re = Regex::new(r"^(ref:.*|[0-9a-f]{40}$)")?;
-    let text = hyper::body::to_bytes(res).await?;
-    if !re.is_match(std::str::from_utf8(&text)?.trim()) {
+    let body = hyper::body::to_bytes(res).await?;
+    let text = std::str::from_utf8(&body)?;
+    if !re.is_match(text.trim()) {
         Err(eyre!("{} is not a git HEAD", url.as_str()))?
     }
 
@@ -136,17 +140,32 @@ async fn fetch_head(mut url: Url, output: &PathBuf, n_tasks: usize) -> Result<()
         println!("warn: {url_string} responded without Content-Type: text/html")
     }
 
-    let list = get_indexed_files(std::str::from_utf8(&hyper::body::to_bytes(res).await?)?);
+    let mut ignore_errors = true;
+    let body = hyper::body::to_bytes(res).await?;
+    let text = std::str::from_utf8(&body)?;
+    let list = get_indexed_files(text);
     if list.iter().any(|filename| filename == "HEAD") {
+        ignore_errors = false;
         println!("Recursively downloading {url_string}");
-        recursive_download(client, &url, list, n_tasks).await?;
+        let tasks: Vec<String> = vec![String::from(".git"), String::from(".gitignore")];
+        recursive_download(client, &orig_url, tasks, n_tasks).await?;
     }
-    println!(
-        "Changing current directory to \"{}\"",
-        output.to_str().unwrap()
-    );
-    std::env::set_current_dir(output)?;
     println!("Performing a git checkout");
+    checkout(ignore_errors)
+}
+
+fn checkout(ignore_errors: bool) -> Result<()> {
+    let status = std::process::Command::new("git")
+        .arg("checkout")
+        .status()
+        .wrap_err("Failed to run git checkout")
+        .suggestion("Make sure your system has git installed")?;
+    if ignore_errors && !status.success() {
+        Err(eyre!(
+            "Checkout command did not exit cleanly, exit status: {status}"
+        ))
+        .suggestion("Some files from the repository's tree may be missing")?
+    }
     Ok(())
 }
 
@@ -181,7 +200,6 @@ async fn recursive_download(
             .flatten()
             .collect::<Vec<_>>();
     }
-    println!("Time to checkout baby!");
     Ok(())
 }
 
@@ -199,7 +217,8 @@ async fn download(
     url.set_path(&segments.join("/"));
 
     let res = client.get(url.as_str().parse()?).await?;
-    match res.status() {
+    let status = res.status();
+    match status {
         // If the status code is one of these, it is a directory
         StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND => {
             // Append a slash to the URL, this is generally the location
@@ -210,7 +229,7 @@ async fn download(
 
             let res = client.get(url.parse()?).await?;
             if !is_html(&res) {
-                println!("warn: {url} responded without Content-Type: text/html")
+                println!("warn: {url} responded without Content-Type: text/html");
             }
 
             Ok(Some(
@@ -220,11 +239,15 @@ async fn download(
                     .collect(),
             ))
         }
-        _ => {
+        StatusCode::OK => {
             let mut file = std::fs::File::create(href)?;
             let body = &hyper::body::to_bytes(res).await?;
             let mut content = Cursor::new(&body);
             std::io::copy(&mut content, &mut file)?;
+            Ok(None)
+        }
+        _ => {
+            println!("warn: {url} responded with status code {status}");
             Ok(None)
         }
     }
@@ -234,17 +257,12 @@ async fn download(
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
-    let output = &cli.output;
-    let mut dotgit = output.clone();
-    dotgit.push(".git");
-    std::fs::create_dir_all(&dotgit)
+    let output = cli.output;
+    std::fs::create_dir_all(&output)
         .wrap_err("Failed to create output directory")
         .suggestion("Try supplying a location you can write to")?;
-    println!(
-        "Changing current directory to \"{}\"",
-        dotgit.to_str().unwrap()
-    );
-    std::env::set_current_dir(dotgit)?;
-    fetch_head(cli.url.clone(), output, cli.tasks).await?;
+    println!("Changing current directory to \"{output}\"",);
+    std::env::set_current_dir(output)?;
+    fetch_head(cli.url.clone(), cli.tasks).await?;
     Ok(())
 }
