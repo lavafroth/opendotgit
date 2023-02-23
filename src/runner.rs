@@ -30,19 +30,14 @@ impl Runner {
             list = stream::iter(list)
                 .map(|href| self.download(href))
                 .buffer_unordered(self.tasks)
-                .filter_map(|b| async {
-                    b.unwrap_or_else(|e| {
+                .flat_map(|b| {
+                    stream::iter(b.unwrap_or_else(|e| {
                         eprintln!("Failed while fetching resource: {e}");
-                        None
-                    })
+                        vec![]
+                    }))
                 })
-                // Pretty sure there's a better way to do this.
-                // TODO: somehow use flatmap
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
+                .collect()
+                .await;
         }
         Ok(())
     }
@@ -53,13 +48,12 @@ impl Runner {
             .path_segments()
             .ok_or_else(|| eyre!("Supplied URL cannot be an absolute URL"))?
             .collect::<Vec<_>>();
-        segments.push(href);
+        segments.append(&mut href.split("/").collect());
         url.set_path(&segments.join("/"));
-        let response = self.client.get(url.as_str().parse()?).await?;
-        Ok(response)
+        Ok(self.client.get(url.as_str().parse()?).await?)
     }
 
-    async fn download(&self, href: String) -> Result<Option<Vec<String>>> {
+    async fn download(&self, href: String) -> Result<Vec<String>> {
         let res = self.get(&href).await?;
         let url = &self.url;
         let status = res.status();
@@ -69,31 +63,29 @@ impl Runner {
                 // Append a slash to the URL, this is generally the location
                 // of the directory index. If the redirect location is different,
                 // something is very wrong.
-                let res = self.get("").await?;
+                let res = self.get(&format!("{href}/")).await?;
                 std::fs::create_dir(&href)?;
 
                 if !is_html(&res) {
-                    println!("warn: {url} responded without Content-Type: text/html");
+                    println!("warn: {url}{href} responded without Content-Type: text/html");
                 }
 
-                Ok(Some(
-                    parsing::list_from_response(res)
-                        .await?
-                        .into_iter()
-                        .map(|child| format!("{href}/{child}"))
-                        .collect(),
-                ))
+                Ok(parsing::list_from_response(res)
+                    .await?
+                    .into_iter()
+                    .map(|child| format!("{href}/{child}"))
+                    .collect())
             }
             StatusCode::OK => {
                 let mut file = std::fs::File::create(href)?;
                 let body = &hyper::body::to_bytes(res).await?;
                 let mut content = Cursor::new(&body);
                 std::io::copy(&mut content, &mut file)?;
-                Ok(None)
+                Ok(vec![])
             }
             _ => {
                 println!("warn: {url} responded with status code {status}");
-                Ok(None)
+                Ok(vec![])
             }
         }
     }
@@ -211,7 +203,7 @@ impl Runner {
             Err(eyre!("{url} is not a git HEAD"))?
         }
         let path = ".git/";
-        let url_string = format!("{url}/{path}");
+        let url_string = format!("{url}{path}");
         println!("Testing {url_string}");
 
         let res = self.get(path).await?;
@@ -220,7 +212,8 @@ impl Runner {
         }
 
         let mut ignore_errors = true;
-        if parsing::list(text)
+        if parsing::list_from_response(res)
+            .await?
             .iter()
             .any(|filename| filename == "HEAD")
         {
