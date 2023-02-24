@@ -11,8 +11,10 @@ use hyper::{
 };
 use hyper_tls::HttpsConnector;
 use regex::Regex;
-use std::io::Cursor;
+use std::{io::Cursor, path::PathBuf};
+use tokio::fs;
 use url::Url;
+use walkdir::WalkDir;
 
 macro_rules! string_vec {
     ($($x:expr),*) => (vec![$($x.to_string()),*]);
@@ -48,7 +50,7 @@ impl Runner {
             .path_segments()
             .ok_or_else(|| eyre!("Supplied URL cannot be an absolute URL"))?
             .collect::<Vec<_>>();
-        segments.append(&mut href.split("/").collect());
+        segments.append(&mut href.split('/').collect());
         url.set_path(&segments.join("/"));
         Ok(self.client.get(url.as_str().parse()?).await?)
     }
@@ -265,15 +267,76 @@ impl Runner {
                 ".git/refs/wip/index/refs/heads/master"
             ])
             .await?;
-            println!("Finding packs");
-            // TODO:
+
             // read .git/objects/info/packs if exists
             //   for every sha1 hash, download .git/objects/pack/pack-%s.{idx,pack}
+            println!("Finding packs");
+
+            let pack_path: PathBuf = [".git", "objects", "info", "packs"].iter().collect();
+            let mut tasks = vec![];
+            if pack_path.exists() {
+                let ex = r"pack-([a-f0-9]{40})\.pack";
+                let re = Regex::new(ex)?;
+                let info_packs = fs::read_to_string(pack_path).await?;
+                for capture in re.captures_iter(&info_packs) {
+                    if let Some(sha1) = capture.get(0) {
+                        let sha1 = sha1.as_str();
+                        tasks.push(format!(".git/objects/pack/pack-{sha1}.idx"));
+                        tasks.push(format!(".git/objects/pack/pack-{sha1}.pack"));
+                    }
+                }
+            }
+            self.download_all(tasks).await?;
+
             println!("Finding objects");
-            // TODO:
             // For the contents of .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
             //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second (1) match group
             //
+            let mut files: Vec<PathBuf> = vec![
+                [".git", "packed-refs"].iter().collect(),
+                [".git", "info", "refs"].iter().collect(),
+                [".git", "FETCH_HEAD"].iter().collect(),
+                [".git", "ORIG_HEAD"].iter().collect(),
+            ];
+
+            let mut refs_and_logs = [[".git", "refs"], [".git", "logs"]]
+                .iter()
+                .map(|v| {
+                    let path = v.iter().collect::<PathBuf>();
+
+                    WalkDir::new(path)
+                        .into_iter()
+                        .filter_map(|e| {
+                            e.ok().and_then(|en| {
+                                if en.file_type().is_file() {
+                                    Some(PathBuf::from(en.path()))
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .collect::<Vec<PathBuf>>()
+                })
+                .flatten()
+                .collect::<Vec<PathBuf>>();
+
+            files.append(&mut refs_and_logs);
+
+            let mut objs: Vec<String> = vec![];
+            let ex = r"(^|\s)([a-f0-9]{40})($|\s)";
+            let re = Regex::new(ex)?;
+            for filepath in files {
+                if filepath.exists() {
+                    for m in re.captures_iter(&fs::read_to_string(filepath).await?) {
+                        if let Some(m) = m.get(1) {
+                            objs.push(m.as_str().to_string());
+                        }
+                    }
+                }
+            }
+
+            println!("Objects:\n\n{:#?}", objs);
+            // TODO:
             // If .git/index exists
             //   add the object in the entry (again, second index) to our list of objects
             //
