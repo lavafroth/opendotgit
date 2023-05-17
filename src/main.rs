@@ -4,6 +4,7 @@ use color_eyre::{
     Section,
 };
 use url::Url;
+mod pack;
 mod parsing;
 mod runner;
 use runner::Runner;
