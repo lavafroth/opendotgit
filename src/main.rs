@@ -5,8 +5,9 @@ use color_eyre::{
 };
 use url::Url;
 mod pack;
-mod parsing;
+mod path;
 mod runner;
+mod webpage;
 use runner::Runner;
 
 #[derive(Parser, Debug)]
@@ -30,10 +31,11 @@ struct Cli {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
+    simple_logger::init_with_level(log::Level::Info).unwrap();
     std::fs::create_dir_all(&cli.output)
         .wrap_err("Failed to create output directory")
         .suggestion("Try supplying a location you can write to")?;
-    println!("Changing current directory to \"{}\"", &cli.output);
+    log::info!("Changing current directory to \"{}\"", &cli.output);
     std::env::set_current_dir(cli.output)?;
     Runner::new(&cli.url, cli.tasks).run().await?;
     Ok(())

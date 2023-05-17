@@ -1,6 +1,7 @@
 use byteorder::{BigEndian, ReadBytesExt};
+use color_eyre::{eyre::bail, Result};
 use std::fs::File;
-use std::io::{Read, Result};
+use std::io::Read;
 use std::path::Path;
 
 const IDX_SIGNATURE: &[u8; 4] = b"\xfftOc";
@@ -24,10 +25,7 @@ fn parse_pack_idx_header<R: Read>(reader: &mut R) -> Result<PackIdxHeader> {
     reader.read_exact(&mut signature_buf)?;
 
     if signature_buf != *IDX_SIGNATURE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Invalid packfile index signature",
-        ));
+        bail!("Invalid packfile index signature");
     }
 
     let _version = reader.read_u32::<BigEndian>()?;
