@@ -1,11 +1,11 @@
 use crate::parsing;
+use std::collections::HashSet;
+
 use color_eyre::{
     eyre::{eyre, Result, WrapErr},
     Section,
 };
 use futures::{stream, StreamExt};
-use git2::{ObjectType, Oid, PackBuilder, Repository};
-use gix_pack;
 use hyper::{
     client::{connect::dns::GaiResolver, HttpConnector},
     header::{CONTENT_LENGTH, CONTENT_TYPE},
@@ -70,7 +70,7 @@ impl Runner {
                 // of the directory index. If the redirect location is different,
                 // something is very wrong.
                 let res = self.get(&format!("{href}/")).await?;
-                std::fs::create_dir(&href)?;
+                fs::create_dir_all(&href).await?;
 
                 if !is_html(&res) {
                     println!("warn: {url}{href} responded without Content-Type: text/html");
@@ -83,6 +83,10 @@ impl Runner {
                     .collect())
             }
             StatusCode::OK => {
+                if let Some(parent) = Path::new(&href).parent() {
+                    fs::create_dir_all(parent).await?;
+                }
+
                 let mut file = std::fs::File::create(href)?;
                 let body = &hyper::body::to_bytes(res).await?;
                 let mut content = Cursor::new(&body);
@@ -90,7 +94,7 @@ impl Runner {
                 Ok(vec![])
             }
             _ => {
-                println!("warn: {url} responded with status code {status}");
+                println!("warn: {url}{href} responded with status code {status}");
                 Ok(vec![])
             }
         }
@@ -140,19 +144,22 @@ impl Runner {
 
     async fn find_refs(&self, href: &str) -> Result<Vec<String>> {
         let res = self.get(href).await?;
+        if let Some(parent) = Path::new(&href).parent() {
+            fs::create_dir_all(parent).await?;
+        }
         let mut file = std::fs::File::create(href)?;
         let body = &hyper::body::to_bytes(res).await?;
         let mut content = Cursor::new(&body);
         std::io::copy(&mut content, &mut file)?;
         let text = std::str::from_utf8(body)?;
-        let ex = r#"(refs(/[a-zA-Z0-9\-\.\_\*]+)+)"#;
+        let ex = r#"(refs(/[a-zA-Z0-9\-\._\*]+)+)"#;
         let re = Regex::new(ex)?;
         Ok(re
             .captures_iter(text)
             .filter_map(|mat| {
                 if let Some(reference) = mat.get(0) {
                     let reference = reference.as_str();
-                    if reference.ends_with('*')
+                    if !reference.ends_with('*')
                     /* && is_safe_path(reference) */
                     {
                         return Some(vec![
@@ -282,7 +289,7 @@ impl Runner {
                 let re = Regex::new(ex)?;
                 let info_packs = fs::read_to_string(pack_path).await?;
                 for capture in re.captures_iter(&info_packs) {
-                    if let Some(sha1) = capture.get(0) {
+                    if let Some(sha1) = capture.get(1) {
                         let sha1 = sha1.as_str();
                         tasks.push(format!(".git/objects/pack/pack-{sha1}.idx"));
                         tasks.push(format!(".git/objects/pack/pack-{sha1}.pack"));
@@ -293,7 +300,7 @@ impl Runner {
 
             println!("Finding objects");
             // For the contents of .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
-            //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second (1) match group
+            //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second match group
             //
             let mut files: Vec<PathBuf> = vec![
                 [".git", "packed-refs"].iter().collect(),
@@ -325,14 +332,14 @@ impl Runner {
 
             files.append(&mut refs_and_logs);
 
-            let mut objs: Vec<String> = vec![];
+            let mut objs = HashSet::new();
             let ex = r"(^|\s)([a-f0-9]{40})($|\s)";
             let re = Regex::new(ex)?;
             for filepath in files {
                 if filepath.exists() {
                     for m in re.captures_iter(&fs::read_to_string(filepath).await?) {
-                        if let Some(m) = m.get(1) {
-                            objs.push(m.as_str().to_string());
+                        if let Some(m) = m.get(2) {
+                            objs.insert(m.as_str().to_string());
                         }
                     }
                 }
@@ -344,31 +351,21 @@ impl Runner {
 
             for entry in index.iter() {
                 let oid = entry.id;
-                objs.push(oid.to_string());
+                objs.insert(oid.to_string());
             }
 
             let pack_file_dir: PathBuf = [".git", "objects", "pack"].iter().collect();
             if pack_file_dir.is_dir() {
-                WalkDir::new(&pack_file_dir)
+                let packs = WalkDir::new(&pack_file_dir)
                     .into_iter()
                     .filter_map(|entry| {
                         entry.ok().and_then(|entry| {
                             if entry.file_type().is_file() {
                                 if let Some(name) = entry.file_name().to_str() {
-                                    if name.starts_with("pack-") && name.ends_with(".pack") {
-                                        // let pack_data_path = pack_file_dir.join(entry.path());
-                                        let idx_path = format!("{}.idx", &name[..name.len() - 5]);
-                                        let index =
-                                            git2::Index::open(&Path::new(&idx_path)).unwrap();
-
-                                        for entry in index.iter() {
-                                            let oid = entry.id;
-                                            objs.push(oid.to_string());
-                                            // gix_pack::Bundle::at(name.into(), )
-                                            println!("Pack hash: {oid}");
-                                        }
-
-                                        Some(PathBuf::from(entry.path()))
+                                    if name.starts_with("pack-") && name.ends_with(".idx") {
+                                        Some(
+                                            crate::pack::parse(entry.path().to_path_buf()).unwrap(),
+                                        )
                                     } else {
                                         None
                                     }
@@ -380,15 +377,19 @@ impl Runner {
                             }
                         })
                     })
-                    .collect::<Vec<PathBuf>>();
+                    .flatten()
+                    .collect::<HashSet<_>>();
+                objs = objs.union(&packs).cloned().collect();
             }
 
-            println!("Objects:\n\n{:#?}", objs);
-            // TODO:
-            //
-            // For all the files in .git/objects/pack that begin with "pack-" or end with ".pack"
-            //   add their sha1 hexdigest to our list of objects if not already present
-            //   download format!(".git/objects/{}/{}", obj[0..2], obj[2..])
+            objs.take("0000000000000000000000000000000000000000");
+
+            self.download_all(
+                objs.into_iter()
+                    .map(|obj| format!(".git/objects/{}/{}", &obj[0..2], &obj[2..]))
+                    .collect(),
+            )
+            .await?;
         }
         println!("Performing a git checkout");
         checkout(ignore_errors)
