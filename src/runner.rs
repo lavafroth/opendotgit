@@ -1,25 +1,28 @@
-use crate::parsing;
-use std::collections::HashSet;
+use crate::pack;
+use crate::path::CreateParentDirs;
+use crate::webpage;
 
 use color_eyre::{
-    eyre::{eyre, Result, WrapErr},
+    eyre::{bail, eyre, Result, WrapErr},
     Section,
 };
 use futures::{stream, StreamExt};
 use hyper::{
     client::{connect::dns::GaiResolver, HttpConnector},
-    header::{CONTENT_LENGTH, CONTENT_TYPE},
     Body, Client, Response, StatusCode,
 };
 use hyper_tls::HttpsConnector;
+use log::{error, info, warn};
 use regex::Regex;
 use std::{
+    collections::HashSet,
     io::Cursor,
     path::{Path, PathBuf},
 };
 use tokio::fs;
 use url::Url;
 use walkdir::WalkDir;
+use webpage::ResponseExt;
 
 macro_rules! string_vec {
     ($($x:expr),*) => (vec![$($x.to_string()),*]);
@@ -38,7 +41,7 @@ impl Runner {
                 .buffer_unordered(self.tasks)
                 .flat_map(|b| {
                     stream::iter(b.unwrap_or_else(|e| {
-                        eprintln!("Failed while fetching resource: {e}");
+                        warn!("Failed while fetching resource: {e}");
                         vec![]
                     }))
                 })
@@ -69,24 +72,21 @@ impl Runner {
                 // Append a slash to the URL, this is generally the location
                 // of the directory index. If the redirect location is different,
                 // something is very wrong.
-                let res = self.get(&format!("{href}/")).await?;
+                let response = self.get(&format!("{href}/")).await?;
                 fs::create_dir_all(&href).await?;
 
-                if !is_html(&res) {
-                    println!("warn: {url}{href} responded without Content-Type: text/html");
+                if !response.is_html() {
+                    warn!("{url}{href} responded without content type text/html");
                 }
 
-                Ok(parsing::list_from_response(res)
+                Ok(webpage::list(response)
                     .await?
                     .into_iter()
                     .map(|child| format!("{href}/{child}"))
                     .collect())
             }
             StatusCode::OK => {
-                if let Some(parent) = Path::new(&href).parent() {
-                    fs::create_dir_all(parent).await?;
-                }
-
+                Path::new(&href).create_parent_dirs()?;
                 let mut file = std::fs::File::create(href)?;
                 let body = &hyper::body::to_bytes(res).await?;
                 let mut content = Cursor::new(&body);
@@ -94,7 +94,7 @@ impl Runner {
                 Ok(vec![])
             }
             _ => {
-                println!("warn: {url}{href} responded with status code {status}");
+                warn!("{url}{href} responded with status code {status}");
                 Ok(vec![])
             }
         }
@@ -106,7 +106,7 @@ impl Runner {
             .buffer_unordered(self.tasks)
             .map(|b| async {
                 if let Err(e) = b {
-                    eprintln!("Failed while fetching resource: {e}");
+                    error!("Failed while fetching resource: {e}");
                 }
             })
             // Pretty sure there's a better way to do this.
@@ -144,9 +144,7 @@ impl Runner {
 
     async fn find_refs(&self, href: &str) -> Result<Vec<String>> {
         let res = self.get(href).await?;
-        if let Some(parent) = Path::new(&href).parent() {
-            fs::create_dir_all(parent).await?;
-        }
+        Path::new(&href).create_parent_dirs()?;
         let mut file = std::fs::File::create(href)?;
         let body = &hyper::body::to_bytes(res).await?;
         let mut content = Cursor::new(&body);
@@ -186,7 +184,7 @@ impl Runner {
                     match b {
                         Ok(b) => Some(b),
                         Err(e) => {
-                            eprintln!("Failed while fetching reference: {e}");
+                            error!("Failed while fetching reference: {e}");
                             None
                         }
                     }
@@ -203,38 +201,40 @@ impl Runner {
 
     pub async fn run(self) -> Result<()> {
         let url = &self.url;
-        let res = self.get(".git/HEAD").await?;
-        verify_response(&res).wrap_err(format!("While fetching {url}"))?;
+        let response = self.get(".git/HEAD").await?;
+        response
+            .verify()
+            .wrap_err(format!("While fetching {url}"))?;
 
         // TODO: consider making this lazy_static
         let ex = r#"^(ref:.*|[0-9a-f]{40}$)"#;
         let re = Regex::new(ex)?;
-        let body = hyper::body::to_bytes(res).await?;
+        let body = hyper::body::to_bytes(response).await?;
         let text = std::str::from_utf8(&body)?;
         if !re.is_match(text.trim()) {
-            Err(eyre!("{url} is not a git HEAD"))?
+            bail!("{url} is not a git HEAD");
         }
         let path = ".git/";
         let url_string = format!("{url}{path}");
-        println!("Testing {url_string}");
+        info!("Testing {url_string}");
 
-        let res = self.get(path).await?;
-        if !is_html(&res) {
-            println!("warn: {url_string} responded without Content-Type: text/html")
+        let response = self.get(path).await?;
+        if !response.is_html() {
+            warn!("{url_string} responded without content type text/html")
         }
 
         let mut ignore_errors = true;
-        if parsing::list_from_response(res)
+        if webpage::list(response)
             .await?
             .iter()
             .any(|filename| filename == "HEAD")
         {
             ignore_errors = false;
-            println!("Recursively downloading {url_string}");
+            info!("Recursively downloading {url_string}");
             self.recursive_download(string_vec![".git", ".gitignore"])
                 .await?;
         } else {
-            println!("Fetching common files");
+            info!("Fetching common files");
             self.download_all(string_vec![
                 ".gitignore",
                 ".git/COMMIT_EDITMSG",
@@ -256,7 +256,7 @@ impl Runner {
                 ".git/objects/info/packs"
             ])
             .await?;
-            println!("Finding refs");
+            info!("Finding refs");
             self.find_all_refs(string_vec![
                 ".git/FETCH_HEAD",
                 ".git/HEAD",
@@ -280,7 +280,7 @@ impl Runner {
 
             // read .git/objects/info/packs if exists
             //   for every sha1 hash, download .git/objects/pack/pack-%s.{idx,pack}
-            println!("Finding packs");
+            info!("Finding packs");
 
             let pack_path: PathBuf = [".git", "objects", "info", "packs"].iter().collect();
             let mut tasks = vec![];
@@ -298,7 +298,7 @@ impl Runner {
             }
             self.download_all(tasks).await?;
 
-            println!("Finding objects");
+            info!("Finding objects");
             // For the contents of .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
             //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second match group
             //
@@ -311,7 +311,7 @@ impl Runner {
 
             let mut refs_and_logs = [[".git", "refs"], [".git", "logs"]]
                 .iter()
-                .map(|v| {
+                .flat_map(|v| {
                     let path = v.iter().collect::<PathBuf>();
 
                     WalkDir::new(path)
@@ -327,7 +327,6 @@ impl Runner {
                         })
                         .collect::<Vec<PathBuf>>()
                 })
-                .flatten()
                 .collect::<Vec<PathBuf>>();
 
             files.append(&mut refs_and_logs);
@@ -356,29 +355,23 @@ impl Runner {
 
             let pack_file_dir: PathBuf = [".git", "objects", "pack"].iter().collect();
             if pack_file_dir.is_dir() {
-                let packs = WalkDir::new(&pack_file_dir)
+                let packs: HashSet<_> = WalkDir::new(&pack_file_dir)
                     .into_iter()
                     .filter_map(|entry| {
                         entry.ok().and_then(|entry| {
-                            if entry.file_type().is_file() {
-                                if let Some(name) = entry.file_name().to_str() {
-                                    if name.starts_with("pack-") && name.ends_with(".idx") {
-                                        Some(
-                                            crate::pack::parse(entry.path().to_path_buf()).unwrap(),
-                                        )
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
+                            let name = entry.file_name().to_string_lossy();
+                            if entry.file_type().is_file()
+                                && name.starts_with("pack-")
+                                && name.ends_with(".idx")
+                            {
+                                Some(pack::parse(entry.path()).unwrap())
                             } else {
                                 None
                             }
                         })
                     })
                     .flatten()
-                    .collect::<HashSet<_>>();
+                    .collect();
                 objs = objs.union(&packs).cloned().collect();
             }
 
@@ -391,40 +384,11 @@ impl Runner {
             )
             .await?;
         }
-        println!("Performing a git checkout");
+        info!("Performing a git checkout");
         checkout(ignore_errors)
     }
 }
 
-fn verify_response(response: &Response<Body>) -> Result<()> {
-    let status = response.status();
-    if status != StatusCode::OK {
-        Err(eyre!("Responded with status code {status}"))?
-    }
-    if let Some(content_length) = response.headers().get(CONTENT_LENGTH) {
-        if content_length.to_str()?.parse::<u16>() == Ok(0) {
-            Err(eyre!("Responded with content-length equal to zero"))?
-        }
-    }
-
-    if is_html(response) {
-        Err(eyre!("Responded with HTML"))?
-    }
-    Ok(())
-}
-
-fn is_html(response: &Response<Body>) -> bool {
-    response
-        .headers()
-        .get(CONTENT_TYPE)
-        .map(|content_type| {
-            content_type
-                .to_str()
-                .map(|t| t == "text/html")
-                .unwrap_or(false)
-        })
-        .unwrap_or(false)
-}
 fn checkout(ignore_errors: bool) -> Result<()> {
     let status = std::process::Command::new("git")
         .arg("checkout")
