@@ -831,7 +831,9 @@ dependencies = [
  "hex",
  "hyper",
  "hyper-tls",
+ "lazy_static",
  "log",
+ "pathbuf",
  "regex",
  "simple_logger",
  "soup",
@@ -920,6 +922,12 @@ dependencies = [
  "smallvec",
  "windows-sys 0.45.0",
 ]
+
+[[package]]
+name = "pathbuf"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8992df7ccb4aa439069561f4d1f391ad59eb7a8ea718fef6e4623ae09f40e291"
 
 [[package]]
 name = "percent-encoding"

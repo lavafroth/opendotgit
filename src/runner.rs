@@ -1,6 +1,9 @@
+use crate::constants;
+use crate::expression;
 use crate::pack;
-use crate::path::CreateParentDirs;
+use crate::string_vec;
 use crate::webpage;
+use hyper::body::Bytes;
 
 use color_eyre::{
     eyre::{bail, eyre, Result, WrapErr},
@@ -13,7 +16,7 @@ use hyper::{
 };
 use hyper_tls::HttpsConnector;
 use log::{error, info, warn};
-use regex::Regex;
+use pathbuf::pathbuf;
 use std::{
     collections::HashSet,
     io::Cursor,
@@ -24,9 +27,6 @@ use url::Url;
 use walkdir::WalkDir;
 use webpage::ResponseExt;
 
-macro_rules! string_vec {
-    ($($x:expr),*) => (vec![$($x.to_string()),*]);
-}
 pub struct Runner {
     url: Url,
     tasks: usize,
@@ -86,11 +86,7 @@ impl Runner {
                     .collect())
             }
             StatusCode::OK => {
-                Path::new(&href).create_parent_dirs()?;
-                let mut file = std::fs::File::create(href)?;
-                let body = &hyper::body::to_bytes(res).await?;
-                let mut content = Cursor::new(&body);
-                std::io::copy(&mut content, &mut file)?;
+                self.write_and_yield(Path::new(&href), res).await?;
                 Ok(vec![])
             }
             _ => {
@@ -109,8 +105,6 @@ impl Runner {
                     error!("Failed while fetching resource: {e}");
                 }
             })
-            // Pretty sure there's a better way to do this.
-            // TODO: somehow use flatma
             .collect::<Vec<_>>()
             .await;
         Ok(())
@@ -142,17 +136,28 @@ impl Runner {
         }
     }
 
-    async fn find_refs(&self, href: &str) -> Result<Vec<String>> {
-        let res = self.get(href).await?;
-        Path::new(&href).create_parent_dirs()?;
-        let mut file = std::fs::File::create(href)?;
-        let body = &hyper::body::to_bytes(res).await?;
+    async fn write_and_yield<P: AsRef<Path>>(
+        &self,
+        path: P,
+        response: Response<Body>,
+    ) -> Result<Bytes> {
+        if let Some(parent) = path.as_ref().parent() {
+            fs::create_dir_all(parent).await?;
+        } else {
+            bail!("Parent directory unavailable");
+        }
+        let mut file = std::fs::File::create(path)?;
+        let body = hyper::body::to_bytes(response).await?;
         let mut content = Cursor::new(&body);
         std::io::copy(&mut content, &mut file)?;
-        let text = std::str::from_utf8(body)?;
-        let ex = r#"(refs(/[a-zA-Z0-9\-\._\*]+)+)"#;
-        let re = Regex::new(ex)?;
-        Ok(re
+        Ok(body)
+    }
+
+    async fn find_refs(&self, href: &str) -> Result<Vec<String>> {
+        let response = self.get(href).await?;
+        let body = self.write_and_yield(Path::new(href), response).await?;
+        let text = std::str::from_utf8(&body)?;
+        Ok(expression::REFS
             .captures_iter(text)
             .filter_map(|mat| {
                 if let Some(reference) = mat.get(0) {
@@ -206,12 +211,9 @@ impl Runner {
             .verify()
             .wrap_err(format!("While fetching {url}"))?;
 
-        // TODO: consider making this lazy_static
-        let ex = r#"^(ref:.*|[0-9a-f]{40}$)"#;
-        let re = Regex::new(ex)?;
         let body = hyper::body::to_bytes(response).await?;
         let text = std::str::from_utf8(&body)?;
-        if !re.is_match(text.trim()) {
+        if !expression::HEAD.is_match(text.trim()) {
             bail!("{url} is not a git HEAD");
         }
         let path = ".git/";
@@ -235,60 +237,26 @@ impl Runner {
                 .await?;
         } else {
             info!("Fetching common files");
-            self.download_all(string_vec![
-                ".gitignore",
-                ".git/COMMIT_EDITMSG",
-                ".git/description",
-                ".git/hooks/applypatch-msg.sample",
-                ".git/hooks/commit-msg.sample",
-                ".git/hooks/post-commit.sample",
-                ".git/hooks/post-receive.sample",
-                ".git/hooks/post-update.sample",
-                ".git/hooks/pre-applypatch.sample",
-                ".git/hooks/pre-commit.sample",
-                ".git/hooks/pre-push.sample",
-                ".git/hooks/pre-rebase.sample",
-                ".git/hooks/pre-receive.sample",
-                ".git/hooks/prepare-commit-msg.sample",
-                ".git/hooks/update.sample",
-                ".git/index",
-                ".git/info/exclude",
-                ".git/objects/info/packs"
-            ])
+            self.download_all(
+                constants::KNOWN_FILES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            )
             .await?;
             info!("Finding refs");
-            self.find_all_refs(string_vec![
-                ".git/FETCH_HEAD",
-                ".git/HEAD",
-                ".git/ORIG_HEAD",
-                ".git/config",
-                ".git/info/refs",
-                ".git/logs/HEAD",
-                ".git/logs/refs/heads/master",
-                ".git/logs/refs/remotes/origin/HEAD",
-                ".git/logs/refs/remotes/origin/master",
-                ".git/logs/refs/stash",
-                ".git/packed-refs",
-                ".git/refs/heads/master",
-                ".git/refs/remotes/origin/HEAD",
-                ".git/refs/remotes/origin/master",
-                ".git/refs/stash",
-                ".git/refs/wip/wtree/refs/heads/master",
-                ".git/refs/wip/index/refs/heads/master"
-            ])
-            .await?;
+            self.find_all_refs(constants::REF_FILES.iter().map(|s| s.to_string()).collect())
+                .await?;
 
             // read .git/objects/info/packs if exists
             //   for every sha1 hash, download .git/objects/pack/pack-%s.{idx,pack}
             info!("Finding packs");
 
-            let pack_path: PathBuf = [".git", "objects", "info", "packs"].iter().collect();
+            let pack_path: PathBuf = pathbuf![".git", "objects", "info", "packs"];
             let mut tasks = vec![];
             if pack_path.exists() {
-                let ex = r"pack-([a-f0-9]{40})\.pack";
-                let re = Regex::new(ex)?;
-                let info_packs = fs::read_to_string(pack_path).await?;
-                for capture in re.captures_iter(&info_packs) {
+                for capture in expression::PACK.captures_iter(&fs::read_to_string(pack_path).await?)
+                {
                     if let Some(sha1) = capture.get(1) {
                         let sha1 = sha1.as_str();
                         tasks.push(format!(".git/objects/pack/pack-{sha1}.idx"));
@@ -303,17 +271,15 @@ impl Runner {
             //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second match group
             //
             let mut files: Vec<PathBuf> = vec![
-                [".git", "packed-refs"].iter().collect(),
-                [".git", "info", "refs"].iter().collect(),
-                [".git", "FETCH_HEAD"].iter().collect(),
-                [".git", "ORIG_HEAD"].iter().collect(),
+                pathbuf![".git", "packed-refs"],
+                pathbuf![".git", "info", "refs"],
+                pathbuf![".git", "FETCH_HEAD"],
+                pathbuf![".git", "ORIG_HEAD"],
             ];
 
-            let mut refs_and_logs = [[".git", "refs"], [".git", "logs"]]
+            let mut refs_and_logs = [pathbuf![".git", "refs"], pathbuf![".git", "logs"]]
                 .iter()
-                .flat_map(|v| {
-                    let path = v.iter().collect::<PathBuf>();
-
+                .flat_map(|path| {
                     WalkDir::new(path)
                         .into_iter()
                         .filter_map(|e| {
@@ -332,11 +298,10 @@ impl Runner {
             files.append(&mut refs_and_logs);
 
             let mut objs = HashSet::new();
-            let ex = r"(^|\s)([a-f0-9]{40})($|\s)";
-            let re = Regex::new(ex)?;
             for filepath in files {
                 if filepath.exists() {
-                    for m in re.captures_iter(&fs::read_to_string(filepath).await?) {
+                    for m in expression::OBJECT.captures_iter(&fs::read_to_string(filepath).await?)
+                    {
                         if let Some(m) = m.get(2) {
                             objs.insert(m.as_str().to_string());
                         }
@@ -344,16 +309,14 @@ impl Runner {
                 }
             }
 
-            let index_path: PathBuf = [".git", "index"].iter().collect();
-
-            let index = git2::Index::open(&index_path)?;
+            let index = git2::Index::open(&pathbuf![".git", "index"])?;
 
             for entry in index.iter() {
                 let oid = entry.id;
                 objs.insert(oid.to_string());
             }
 
-            let pack_file_dir: PathBuf = [".git", "objects", "pack"].iter().collect();
+            let pack_file_dir = pathbuf![".git", "objects", "pack"];
             if pack_file_dir.is_dir() {
                 let packs: HashSet<_> = WalkDir::new(&pack_file_dir)
                     .into_iter()

@@ -4,11 +4,12 @@ use color_eyre::{
     Section,
 };
 use url::Url;
+mod constants;
+mod expression;
+mod macros;
 mod pack;
-mod path;
 mod runner;
 mod webpage;
-use runner::Runner;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -37,6 +38,6 @@ async fn main() -> Result<()> {
         .suggestion("Try supplying a location you can write to")?;
     log::info!("Changing current directory to \"{}\"", &cli.output);
     std::env::set_current_dir(cli.output)?;
-    Runner::new(&cli.url, cli.tasks).run().await?;
+    runner::Runner::new(&cli.url, cli.tasks).run().await?;
     Ok(())
 }
