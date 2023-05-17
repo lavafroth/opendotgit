@@ -4,6 +4,8 @@ use color_eyre::{
     Section,
 };
 use futures::{stream, StreamExt};
+use git2::{ObjectType, Oid, PackBuilder, Repository};
+use gix_pack;
 use hyper::{
     client::{connect::dns::GaiResolver, HttpConnector},
     header::{CONTENT_LENGTH, CONTENT_TYPE},
@@ -11,7 +13,10 @@ use hyper::{
 };
 use hyper_tls::HttpsConnector;
 use regex::Regex;
-use std::{io::Cursor, path::PathBuf};
+use std::{
+    io::Cursor,
+    path::{Path, PathBuf},
+};
 use tokio::fs;
 use url::Url;
 use walkdir::WalkDir;
@@ -26,8 +31,7 @@ pub struct Runner {
 }
 
 impl Runner {
-    async fn recursive_download(&self, list: Vec<String>) -> Result<()> {
-        let mut list = list;
+    async fn recursive_download(&self, mut list: Vec<String>) -> Result<()> {
         while !list.is_empty() {
             list = stream::iter(list)
                 .map(|href| self.download(href))
@@ -163,8 +167,7 @@ impl Runner {
             .collect::<Vec<_>>())
     }
 
-    async fn find_all_refs(&self, list: Vec<String>) -> Result<()> {
-        let mut list = list;
+    async fn find_all_refs(&self, mut list: Vec<String>) -> Result<()> {
         while !list.is_empty() {
             list = stream::iter(list)
                 .map(|href| async move {
@@ -307,9 +310,9 @@ impl Runner {
                     WalkDir::new(path)
                         .into_iter()
                         .filter_map(|e| {
-                            e.ok().and_then(|en| {
-                                if en.file_type().is_file() {
-                                    Some(PathBuf::from(en.path()))
+                            e.ok().and_then(|entry| {
+                                if entry.file_type().is_file() {
+                                    Some(PathBuf::from(entry.path()))
                                 } else {
                                     None
                                 }
@@ -335,10 +338,53 @@ impl Runner {
                 }
             }
 
+            let index_path: PathBuf = [".git", "index"].iter().collect();
+
+            let index = git2::Index::open(&index_path)?;
+
+            for entry in index.iter() {
+                let oid = entry.id;
+                objs.push(oid.to_string());
+            }
+
+            let pack_file_dir: PathBuf = [".git", "objects", "pack"].iter().collect();
+            if pack_file_dir.is_dir() {
+                WalkDir::new(&pack_file_dir)
+                    .into_iter()
+                    .filter_map(|entry| {
+                        entry.ok().and_then(|entry| {
+                            if entry.file_type().is_file() {
+                                if let Some(name) = entry.file_name().to_str() {
+                                    if name.starts_with("pack-") && name.ends_with(".pack") {
+                                        // let pack_data_path = pack_file_dir.join(entry.path());
+                                        let idx_path = format!("{}.idx", &name[..name.len() - 5]);
+                                        let index =
+                                            git2::Index::open(&Path::new(&idx_path)).unwrap();
+
+                                        for entry in index.iter() {
+                                            let oid = entry.id;
+                                            objs.push(oid.to_string());
+                                            // gix_pack::Bundle::at(name.into(), )
+                                            println!("Pack hash: {oid}");
+                                        }
+
+                                        Some(PathBuf::from(entry.path()))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect::<Vec<PathBuf>>();
+            }
+
             println!("Objects:\n\n{:#?}", objs);
             // TODO:
-            // If .git/index exists
-            //   add the object in the entry (again, second index) to our list of objects
             //
             // For all the files in .git/objects/pack that begin with "pack-" or end with ".pack"
             //   add their sha1 hexdigest to our list of objects if not already present
