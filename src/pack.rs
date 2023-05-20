@@ -4,22 +4,29 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+/// The signature at the beginning of a Git packfile index.
 const IDX_SIGNATURE: &[u8; 4] = b"\xfftOc";
 
+/// A header for a Git packfile index.
 struct PackIdxHeader {
+    /// The number of entries in the index.
     num_entries: u32,
 }
 
+/// An entry in a Git packfile index.
 struct PackIdxEntry {
+    /// The SHA-1 hash of the object this entry refers to.
     sha1: [u8; 20],
 }
 
 impl PackIdxEntry {
+    /// Returns the type of the object this entry refers to.
     fn object_type(&self) -> u8 {
         (self.sha1[0] >> 4) & 0b111
     }
 }
 
+/// Parses the header of a Git packfile index from the given reader.
 fn parse_pack_idx_header<R: Read>(reader: &mut R) -> Result<PackIdxHeader> {
     let mut signature_buf = [0u8; 4];
     reader.read_exact(&mut signature_buf)?;
@@ -34,6 +41,7 @@ fn parse_pack_idx_header<R: Read>(reader: &mut R) -> Result<PackIdxHeader> {
     Ok(PackIdxHeader { num_entries })
 }
 
+/// Parses an entry in a Git packfile index from the given reader.
 fn parse_pack_idx_entry<R: Read>(reader: &mut R) -> Result<PackIdxEntry> {
     let mut sha1 = [0u8; 20];
     reader.read_exact(&mut sha1)?;
@@ -43,6 +51,7 @@ fn parse_pack_idx_entry<R: Read>(reader: &mut R) -> Result<PackIdxEntry> {
     Ok(PackIdxEntry { sha1 })
 }
 
+/// Parses a Git packfile index file and returns a vector of object hashes.
 pub fn parse<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>> {
     let mut reader = std::io::BufReader::new(File::open(file_path)?);
     let header = parse_pack_idx_header(&mut reader)?;

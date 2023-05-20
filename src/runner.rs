@@ -1,9 +1,7 @@
-use crate::constants;
-use crate::expression;
-use crate::pack;
-use crate::string_vec;
-use crate::webpage;
-use hyper::body::Bytes;
+use crate::{
+    constants, expression, pack, string_vec,
+    webpage::{self, ResponseExt},
+};
 
 use color_eyre::{
     eyre::{bail, eyre, Result, WrapErr},
@@ -11,6 +9,7 @@ use color_eyre::{
 };
 use futures::{stream, StreamExt};
 use hyper::{
+    body::Bytes,
     client::{connect::dns::GaiResolver, HttpConnector},
     Body, Client, Response, StatusCode,
 };
@@ -25,17 +24,22 @@ use std::{
 use tokio::fs;
 use url::Url;
 use walkdir::WalkDir;
-use webpage::ResponseExt;
 
+/// Represents a Git repository runner.
 pub struct Runner {
+    /// The URL of the Git repository to run against.
     url: Url,
+    /// The number of tasks to execute concurrently.
     tasks: usize,
+    /// The HTTP(S) client used to retrieve content from the repository.
     client: Client<HttpsConnector<HttpConnector<GaiResolver>>, Body>,
 }
 
 impl Runner {
+    /// Recursively downloads all files in list.
     async fn recursive_download(&self, mut list: Vec<String>) -> Result<()> {
         while !list.is_empty() {
+            // Download each file in the list concurrently up to the specified number of tasks.
             list = stream::iter(list)
                 .map(|href| self.download(href))
                 .buffer_unordered(self.tasks)
@@ -51,8 +55,10 @@ impl Runner {
         Ok(())
     }
 
+    /// Returns the response from retrieving a resource at href.
     async fn get(&self, href: &str) -> Result<Response<Body>> {
         let mut url = self.url.clone();
+        // Merge the segments of the URL with the segments in href to create the correct URL for the resource.
         let mut segments = url
             .path_segments()
             .ok_or_else(|| eyre!("Supplied URL cannot be an absolute URL"))?
@@ -62,12 +68,13 @@ impl Runner {
         Ok(self.client.get(url.as_str().parse()?).await?)
     }
 
+    /// Downloads a single file at href.
     async fn download(&self, href: String) -> Result<Vec<String>> {
         let res = self.get(&href).await?;
         let url = &self.url;
         let status = res.status();
         match status {
-            // If the status code is one of these, it is a directory
+            // If the status code is one of these, it is a directory.
             StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND => {
                 // Append a slash to the URL, this is generally the location
                 // of the directory index. If the redirect location is different,
@@ -79,6 +86,7 @@ impl Runner {
                     warn!("{url}{href} responded without content type text/html");
                 }
 
+                // Return a list of child resources in the directory.
                 Ok(webpage::list(response)
                     .await?
                     .into_iter()
@@ -86,6 +94,7 @@ impl Runner {
                     .collect())
             }
             StatusCode::OK => {
+                // Write the contents of the response to disk.
                 self.write_and_yield(Path::new(&href), res).await?;
                 Ok(vec![])
             }
@@ -96,7 +105,9 @@ impl Runner {
         }
     }
 
+    /// Downloads all files in list.
     async fn download_all(&self, list: Vec<String>) -> Result<()> {
+        // Download each file in the list concurrently up to the specified number of tasks.
         stream::iter(list)
             .map(|href| self.download(href))
             .buffer_unordered(self.tasks)
@@ -109,13 +120,13 @@ impl Runner {
             .await;
         Ok(())
     }
+
+    /// Creates a new Runner instance with a given URL and number of tasks.
     pub fn new(url: &Url, tasks: usize) -> Runner {
         let mut url = url.clone();
-        // If there are segments in the URL,
-        // check if any of them equal ".git"
         if let Some(segments) = url.path_segments().map(|c| c.collect::<Vec<_>>()) {
-            // Find the last ".git" path segment and use the URL till
-            // that segment without including it.
+            // If there are segments in the URL, use the URL upto but not including the last segment
+            // that equals ".git".
             url.set_path(
                 segments
                     .iter()
@@ -124,8 +135,6 @@ impl Runner {
                     .unwrap_or(String::from(url.path()))
                     .trim_end_matches('/'),
             );
-            // If there were no ".git" segments, an omitted ".git" segment after
-            // the given path is assumed.
         };
         // If there are no segments, an omitted ".git" segment after the URL is assumed.
 
@@ -136,6 +145,8 @@ impl Runner {
         }
     }
 
+    /// Writes the response body to a file and returns it as bytes after creating the parent directory
+    /// if it doesn't exist already.
     async fn write_and_yield<P: AsRef<Path>>(
         &self,
         path: P,
@@ -153,6 +164,7 @@ impl Runner {
         Ok(body)
     }
 
+    /// Finds all references from the given href and returns them as a vector of strings.
     async fn find_refs(&self, href: &str) -> Result<Vec<String>> {
         let response = self.get(href).await?;
         let body = self.write_and_yield(Path::new(href), response).await?;
@@ -177,6 +189,7 @@ impl Runner {
             .collect::<Vec<_>>())
     }
 
+    /// Finds all references recursively from a given list and returns them.
     async fn find_all_refs(&self, mut list: Vec<String>) -> Result<()> {
         while !list.is_empty() {
             list = stream::iter(list)
@@ -204,6 +217,7 @@ impl Runner {
         Ok(())
     }
 
+    /// Runs the Runner instance with the specified parameters and performs a Git checkout.
     pub async fn run(self) -> Result<()> {
         let url = &self.url;
         let response = self.get(".git/HEAD").await?;
@@ -266,10 +280,9 @@ impl Runner {
             }
             self.download_all(tasks).await?;
 
-            info!("Finding objects");
             // For the contents of .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
             //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second match group
-            //
+            info!("Finding objects");
             let mut files: Vec<PathBuf> = vec![
                 pathbuf![".git", "packed-refs"],
                 pathbuf![".git", "info", "refs"],
@@ -352,6 +365,7 @@ impl Runner {
     }
 }
 
+/// Checks out the Git repository and returns a Result indicating success or failure of the operation.
 fn checkout(ignore_errors: bool) -> Result<()> {
     let status = std::process::Command::new("git")
         .arg("checkout")

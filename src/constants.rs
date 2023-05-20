@@ -1,3 +1,4 @@
+/// A slice of file paths that are commonly found in Git repositories.
 pub static KNOWN_FILES: &[&str] = &[
     ".gitignore",
     ".git/COMMIT_EDITMSG",
@@ -19,6 +20,7 @@ pub static KNOWN_FILES: &[&str] = &[
     ".git/objects/info/packs",
 ];
 
+/// A slice of file paths that reference various locations within a Git repository.
 pub static REF_FILES: &[&str] = &[
     ".git/FETCH_HEAD",
     ".git/HEAD",
