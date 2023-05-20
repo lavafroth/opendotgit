@@ -6,7 +6,7 @@ use hyper::{
 use soup::prelude::*;
 use url_path::UrlPath;
 
-/// Returns a list of files parsed from text in HTML
+/// Returns a list of files parsed from HTML text.
 fn list_raw(text: &str) -> Vec<String> {
     Soup::new(text)
         .tag("a")
@@ -23,12 +23,17 @@ fn list_raw(text: &str) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
+/// Adds extra functionality to `hyper::Response<Body>`.
 pub trait ResponseExt {
+    /// Returns true if the response has a `Content-Type` header indicating it is HTML.
     fn is_html(&self) -> bool;
+
+    /// Verifies that the response is valid according to various criteria.
     fn verify(&self) -> Result<()>;
 }
 
 impl ResponseExt for Response<Body> {
+    /// Returns true if the response has a `Content-Type` header indicating it is HTML.
     fn is_html(&self) -> bool {
         self.headers()
             .get(CONTENT_TYPE)
@@ -40,6 +45,8 @@ impl ResponseExt for Response<Body> {
             })
             .unwrap_or(false)
     }
+
+    /// Verifies that the response is valid according to various criteria.
     fn verify(&self) -> Result<()> {
         let status = self.status();
         if status != StatusCode::OK {
@@ -58,7 +65,7 @@ impl ResponseExt for Response<Body> {
     }
 }
 
-/// Returns a list of files parsed by consuming the HTML of a Response
+/// Returns a list of files parsed from the HTML in a `hyper::Response<Body>`.
 pub async fn list(res: Response<Body>) -> Result<Vec<String>> {
     let body = hyper::body::to_bytes(res).await?;
     let text = std::str::from_utf8(&body)?;
