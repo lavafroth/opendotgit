@@ -1,7 +1,7 @@
 [package]
 name = "opendotgit"
 authors = ["Himadri Bhattacharjee <lavafroth@protonmail.com>"]
-about = "Dump git repository from open .git directories"
+description = "Dump git repository from open .git directories"
 version = "0.2.0"
 edition = "2021"
 
@@ -13,7 +13,7 @@ byteorder = "1.4.3"
 clap = { version = "4.1.4", features = ["derive"] }
 color-eyre = "0.6.2"
 futures = "0.3.26"
-git2 = "0.17.1"
+git2 = "0.17.2"
 hex = "0.4.3"
 hyper = {version = "0.14.24", features = ["full"]}
 hyper-tls = "0.5.0"
