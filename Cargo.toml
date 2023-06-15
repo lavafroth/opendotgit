@@ -12,7 +12,7 @@ async-trait = "0.1.68"
 byteorder = "1.4.3"
 clap = { version = "4.1.4", features = ["derive"] }
 color-eyre = "0.6.2"
-futures = "0.3.26"
+futures = "0.3.28"
 git2 = "0.17.2"
 hex = "0.4.3"
 hyper = {version = "0.14.24", features = ["full"]}
