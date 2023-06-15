@@ -15,7 +15,7 @@ color-eyre = "0.6.2"
 futures = "0.3.28"
 git2 = "0.17.2"
 hex = "0.4.3"
-hyper = {version = "0.14.24", features = ["full"]}
+hyper = {version = "0.14.26", features = ["full"]}
 hyper-tls = "0.5.0"
 lazy_static = "1.4.0"
 log = "0.4.17"
