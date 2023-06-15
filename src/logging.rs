@@ -1,5 +1,4 @@
 use color_eyre::{eyre::bail, Result};
-use simple_logger;
 pub fn init(verbosity: u8) -> Result<()> {
     simple_logger::init_with_level(match verbosity {
         0 => log::Level::Info,
