@@ -35,7 +35,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     logging::init(cli.verbose)?;
 
-    // Create the output directory specified in the command line arguments, and ensure that all parent directories exist.
+    // Create the output directory specified in the command line arguments
+    // and ensure that all parent directories exist.
     std::fs::create_dir_all(&cli.output)
         .wrap_err("Failed to create output directory")
         .suggestion("Try supplying a location you can write to")?;

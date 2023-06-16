@@ -124,17 +124,14 @@ impl Runner {
     /// Creates a new Runner instance with a given URL and number of tasks.
     pub fn new(url: &Url, tasks: usize) -> Runner {
         let mut url = url.clone();
-        if let Some(segments) = url.path_segments().map(|c| c.collect::<Vec<_>>()) {
-            // If there are segments in the URL, use the URL upto but not including the last segment
-            // that equals ".git".
-            url.set_path(
-                segments
-                    .iter()
-                    .position(|&segment| segment == ".git")
-                    .map(|index| segments[0..index].join("/"))
-                    .unwrap_or(String::from(url.path()))
-                    .trim_end_matches('/'),
-            );
+        // If there are URL segments, set the new path as the segments upto but not including ".git"
+        if let Some(normalized) = url.path_segments().map(|split| {
+            split
+                .take_while(|&segment| segment != ".git")
+                .collect::<Vec<_>>()
+                .join("/")
+        }) {
+            url.set_path(normalized.trim_end_matches('/'))
         };
         // If there are no segments, an omitted ".git" segment after the URL is assumed.
 
