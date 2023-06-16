@@ -1,6 +1,6 @@
 ### `opendotgit`
 
-A simple Rust tool to download and extract source code from misconfigured open .git directories.
+A simple Rust tool to download and extract source code from misconfigured open `.git` directories.
 
 #### Installation
 
