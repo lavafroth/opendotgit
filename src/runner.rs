@@ -168,19 +168,18 @@ impl Runner {
         let text = std::str::from_utf8(&body)?;
         Ok(expression::REFS
             .captures_iter(text)
-            .filter_map(|mat| {
-                if let Some(reference) = mat.get(0) {
-                    let reference = reference.as_str();
+            .map(|mat| {
+                if let Some(reference) = mat.get(0).map(|r| r.as_str()) {
                     if !reference.ends_with('*')
                     /* && is_safe_path(reference) */
                     {
-                        return Some(vec![
+                        return vec![
                             format!(".git/{reference}"),
                             format!(".git/logs/{reference}"),
-                        ]);
+                        ];
                     }
                 }
-                None
+                vec![]
             })
             .flatten()
             .collect::<Vec<_>>())
@@ -190,19 +189,13 @@ impl Runner {
     async fn find_all_refs(&self, mut list: Vec<String>) -> Result<()> {
         while !list.is_empty() {
             list = stream::iter(list)
-                .map(|href| async move {
-                    let href = &href;
-                    self.find_refs(href).await
-                })
+                .map(|href| async move { self.find_refs(&href).await })
                 .buffer_unordered(self.tasks)
                 .filter_map(|b| async {
-                    match b {
-                        Ok(b) => Some(b),
-                        Err(e) => {
-                            error!("Failed while fetching reference: {e}");
-                            None
-                        }
-                    }
+                    b.map_err(|e| {
+                        error!("Failed while fetching reference: {e}");
+                    })
+                    .ok()
                 })
                 .collect::<Vec<_>>()
                 .await
