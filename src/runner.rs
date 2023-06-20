@@ -21,7 +21,12 @@ use std::{
     io::Cursor,
     path::{Path, PathBuf},
 };
-use tokio::fs;
+use tokio::{
+    fs,
+    time::{timeout, Duration},
+};
+use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use tokio_retry::Retry;
 use url::Url;
 use walkdir::WalkDir;
 
@@ -29,20 +34,22 @@ use walkdir::WalkDir;
 pub struct Runner {
     /// The URL of the Git repository to run against.
     url: Url,
-    /// The number of tasks to execute concurrently.
-    tasks: usize,
+    /// The number of jobs to execute concurrently.
+    jobs: usize,
     /// The HTTP(S) client used to retrieve content from the repository.
     client: Client<HttpsConnector<HttpConnector<GaiResolver>>, Body>,
+    retries: usize,
+    timeout: Duration,
 }
 
 impl Runner {
     /// Recursively downloads all files in list.
     async fn recursive_download(&self, mut list: Vec<String>) -> Result<()> {
         while !list.is_empty() {
-            // Download each file in the list concurrently up to the specified number of tasks.
+            // Download each file in the list concurrently up to the specified number of jobs.
             list = stream::iter(list)
                 .map(|href| self.download(href))
-                .buffer_unordered(self.tasks)
+                .buffer_unordered(self.jobs)
                 .flat_map(|b| {
                     stream::iter(b.unwrap_or_else(|e| {
                         warn!("Failed while fetching resource: {e}");
@@ -65,7 +72,17 @@ impl Runner {
             .collect::<Vec<_>>();
         segments.append(&mut href.split('/').collect());
         url.set_path(&segments.join("/"));
-        Ok(self.client.get(url.as_str().parse()?).await?)
+        let url_str: hyper::Uri = url.as_str().parse()?;
+
+        let retry_strategy = ExponentialBackoff::from_millis(10)
+            .map(jitter)
+            .take(self.retries);
+
+        let retry_future = Retry::spawn(retry_strategy, || async {
+            self.client.get(url_str.clone()).await
+        });
+        let res = timeout(self.timeout, retry_future).await??;
+        Ok(res)
     }
 
     /// Downloads a single file at href.
@@ -107,10 +124,10 @@ impl Runner {
 
     /// Downloads all files in list.
     async fn download_all(&self, list: Vec<String>) -> Result<()> {
-        // Download each file in the list concurrently up to the specified number of tasks.
+        // Download each file in the list concurrently up to the specified number of jobs.
         stream::iter(list)
             .map(|href| self.download(href))
-            .buffer_unordered(self.tasks)
+            .buffer_unordered(self.jobs)
             .map(|b| async {
                 if let Err(e) = b {
                     error!("Failed while fetching resource: {e}");
@@ -121,8 +138,8 @@ impl Runner {
         Ok(())
     }
 
-    /// Creates a new Runner instance with a given URL and number of tasks.
-    pub fn new(url: &Url, tasks: usize) -> Runner {
+    /// Creates a new Runner instance with a given URL and number of jobs.
+    pub fn new(url: &Url, jobs: usize, retries: usize, timeout: Duration) -> Runner {
         let mut url = url.clone();
         // If there are URL segments, set the new path as the segments upto but not including ".git"
         if let Some(normalized) = url.path_segments().map(|split| {
@@ -137,8 +154,10 @@ impl Runner {
 
         Runner {
             url,
-            tasks,
+            jobs,
             client: Client::builder().build::<_, Body>(HttpsConnector::new()),
+            retries,
+            timeout,
         }
     }
 
@@ -190,7 +209,7 @@ impl Runner {
         while !list.is_empty() {
             list = stream::iter(list)
                 .map(|href| async move { self.find_refs(&href).await })
-                .buffer_unordered(self.tasks)
+                .buffer_unordered(self.jobs)
                 .filter_map(|b| async {
                     b.map_err(|e| {
                         error!("Failed while fetching reference: {e}");
@@ -257,18 +276,18 @@ impl Runner {
             info!("Finding packs");
 
             let pack_path: PathBuf = pathbuf![".git", "objects", "info", "packs"];
-            let mut tasks = vec![];
+            let mut jobs = vec![];
             if pack_path.exists() {
                 for capture in expression::PACK.captures_iter(&fs::read_to_string(pack_path).await?)
                 {
                     if let Some(sha1) = capture.get(1) {
                         let sha1 = sha1.as_str();
-                        tasks.push(format!(".git/objects/pack/pack-{sha1}.idx"));
-                        tasks.push(format!(".git/objects/pack/pack-{sha1}.pack"));
+                        jobs.push(format!(".git/objects/pack/pack-{sha1}.idx"));
+                        jobs.push(format!(".git/objects/pack/pack-{sha1}.pack"));
                     }
                 }
             }
-            self.download_all(tasks).await?;
+            self.download_all(jobs).await?;
 
             // For the contents of .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
             //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second match group

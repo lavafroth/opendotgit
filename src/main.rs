@@ -1,3 +1,5 @@
+use tokio::time::Duration;
+
 use clap::{ArgAction::Count, Parser};
 use color_eyre::{
     eyre::{Result, WrapErr},
@@ -22,13 +24,26 @@ struct Cli {
     output: String,
 
     /// Number of asynchronous jobs to spawn
-    #[arg(short, long, default_value_t = 8)]
-    tasks: usize,
+    #[arg(short = 'j', long, default_value_t = 8)]
+    jobs: usize,
 
     /// Turn debugging information on
     #[arg(short, long, action = Count)]
     verbose: u8,
+
+    /// Number of times to retry a failed request
+    #[arg(short, long, default_value_t = 3)]
+    retries: usize,
+
+    #[arg(short, long, default_value = "10", value_parser = parse_seconds, value_name="SECONDS")]
+    timeout: Duration,
 }
+
+fn parse_seconds(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
+    let seconds = arg.parse()?;
+    Ok(Duration::from_secs(seconds))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -46,7 +61,9 @@ async fn main() -> Result<()> {
     std::env::set_current_dir(cli.output)?;
 
     // Spawn a new `Runner` instance with the specified URL and tasks.
-    runner::Runner::new(&cli.url, cli.tasks).run().await?;
+    runner::Runner::new(&cli.url, cli.jobs, cli.retries, cli.timeout)
+        .run()
+        .await?;
 
     Ok(())
 }
