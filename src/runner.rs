@@ -187,7 +187,7 @@ impl Runner {
         let text = std::str::from_utf8(&body)?;
         Ok(expression::REFS
             .captures_iter(text)
-            .map(|mat| {
+            .flat_map(|mat| {
                 if let Some(reference) = mat.get(0).map(|r| r.as_str()) {
                     if !reference.ends_with('*')
                     /* && is_safe_path(reference) */
@@ -200,7 +200,6 @@ impl Runner {
                 }
                 vec![]
             })
-            .flatten()
             .collect::<Vec<_>>())
     }
 
