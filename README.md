@@ -15,17 +15,12 @@ cargo install --git https://github.com/lavafroth/opendotgit
 
 ```
 opendotgit [OPTIONS] <URL> <OUTPUT>
-
-Arguments:
-  <URL>     URL of the .git directory
-  <OUTPUT>  Directory to output the results
-
-Options:
-  -t, --tasks <TASKS>  Number of asynchronous jobs to spawn [default: 8]
-  -v, --verbose...     Turn debugging information on
-  -h, --help           Print help
-  -V, --version        Print version
 ```
+
+#### Positional arguments
+
+- _URL_: URL of the .git directory
+- _OUTPUT_: Directory to output the results
 
 #### A note on directory exposure
 
