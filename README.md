@@ -22,6 +22,17 @@ opendotgit [OPTIONS] <URL> <OUTPUT>
 - _URL_: URL of the .git directory
 - _OUTPUT_: Directory to output the results
 
+#### Options
+
+```
+  -j, --jobs <JOBS>        Number of asynchronous jobs to spawn [default: 8]
+  -v, --verbose...         Turn debugging information on
+  -r, --retries <RETRIES>  Number of times to retry a failed request [default: 3]
+  -t, --timeout <SECONDS>  [default: 10]
+  -h, --help               Print help
+  -V, --version            Print version
+```
+
 #### A note on directory exposure
 
 Opendotgit will try its best to dump the source code from a `.git` directory regardless of whether
