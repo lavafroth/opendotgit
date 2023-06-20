@@ -33,6 +33,11 @@ opendotgit [OPTIONS] <URL> <OUTPUT>
   -V, --version            Print version
 ```
 
+#### Positional arguments
+
+- _URL_: URL of the .git directory
+- _OUTPUT_: Directory to output the results
+
 #### A note on directory exposure
 
 Opendotgit will try its best to dump the source code from a `.git` directory regardless of whether
