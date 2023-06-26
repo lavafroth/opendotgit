@@ -35,6 +35,7 @@ struct Cli {
     #[arg(short, long, default_value_t = 3)]
     retries: usize,
 
+    /// Timeout beyond which a request is no longer retried
     #[arg(short, long, default_value = "10", value_parser = parse_seconds, value_name="SECONDS")]
     timeout: Duration,
 }
