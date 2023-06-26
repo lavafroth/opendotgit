@@ -3,7 +3,7 @@ use regex::Regex;
 
 lazy_static! {
     /// A regular expression that matches references (e.g. "refs/heads/master").
-    pub static ref REFS: Regex = Regex::new(r"(refs(/[a-zA-Z0-9\-\._\*]+)+)").unwrap();
+    pub static ref REFS: Regex = Regex::new(r"(refs(/[\w\-\.\*]+)*/[\w\-\.]+)").unwrap();
 
     /// A regular expression that matches a commit hash or a reference name.
     pub static ref HEAD: Regex = Regex::new(r"^(ref:.*|[0-9a-f]{40}$)").unwrap();
