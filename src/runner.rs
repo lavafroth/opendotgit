@@ -81,8 +81,7 @@ impl Runner {
         let retry_future = Retry::spawn(retry_strategy, || async {
             self.client.get(url_str.clone()).await
         });
-        let res = timeout(self.timeout, retry_future).await??;
-        Ok(res)
+        Ok(timeout(self.timeout, retry_future).await??)
     }
 
     /// Downloads a single file at href.
@@ -128,11 +127,7 @@ impl Runner {
         stream::iter(list)
             .map(|href| self.download(href))
             .buffer_unordered(self.jobs)
-            .map(|b| async {
-                if let Err(e) = b {
-                    error!("Failed while fetching resource: {e}");
-                }
-            })
+            .map(|b| async { b.map_err(|e| error!("Failed while fetching resource: {e}")) })
             .collect::<Vec<_>>()
             .await;
         Ok(())
@@ -210,10 +205,8 @@ impl Runner {
                 .map(|href| async move { self.find_refs(&href).await })
                 .buffer_unordered(self.jobs)
                 .filter_map(|b| async {
-                    b.map_err(|e| {
-                        error!("Failed while fetching reference: {e}");
-                    })
-                    .ok()
+                    b.map_err(|e| error!("Failed while fetching reference: {e}"))
+                        .ok()
                 })
                 .collect::<Vec<_>>()
                 .await
@@ -341,18 +334,17 @@ impl Runner {
             if pack_file_dir.is_dir() {
                 let packs: HashSet<_> = WalkDir::new(&pack_file_dir)
                     .into_iter()
+                    .filter_map(|e| e.ok())
                     .filter_map(|entry| {
-                        entry.ok().and_then(|entry| {
-                            let name = entry.file_name().to_string_lossy();
-                            if entry.file_type().is_file()
-                                && name.starts_with("pack-")
-                                && name.ends_with(".idx")
-                            {
-                                Some(pack::parse(entry.path()).unwrap())
-                            } else {
-                                None
-                            }
-                        })
+                        let name = entry.file_name().to_string_lossy();
+                        if entry.file_type().is_file()
+                            && name.starts_with("pack-")
+                            && name.ends_with(".idx")
+                        {
+                            Some(pack::parse(entry.path()).unwrap())
+                        } else {
+                            None
+                        }
                     })
                     .flatten()
                     .collect();
@@ -384,7 +376,7 @@ fn checkout(ignore_errors: bool) -> Result<()> {
         Err(eyre!(
             "Checkout command did not exit cleanly, exit status: {status}"
         ))
-        .suggestion("Some files from the repository's tree may be missing")?
+        .section("Some files from the repository's tree may be missing")?
     }
     Ok(())
 }
