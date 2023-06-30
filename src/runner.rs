@@ -182,18 +182,14 @@ impl Runner {
         let text = std::str::from_utf8(&body)?;
         Ok(expression::REFS
             .captures_iter(text)
-            .flat_map(|mat| {
-                if let Some(reference) = mat.get(0).map(|r| r.as_str()) {
-                    if !reference.ends_with('*')
-                    /* && is_safe_path(reference) */
-                    {
-                        return vec![
-                            format!(".git/{reference}"),
-                            format!(".git/logs/{reference}"),
-                        ];
-                    }
-                }
-                vec![]
+            .filter_map(|matched| matched.get(0))
+            .map(|reference| reference.as_str())
+            /* TODO: .filter(is_safe_path(reference)) */
+            .flat_map(|reference| {
+                vec![
+                    format!(".git/{reference}"),
+                    format!(".git/logs/{reference}"),
+                ]
             })
             .collect::<Vec<_>>())
     }
@@ -335,18 +331,13 @@ impl Runner {
                 let packs: HashSet<_> = WalkDir::new(&pack_file_dir)
                     .into_iter()
                     .filter_map(|e| e.ok())
-                    .filter_map(|entry| {
+                    .filter(|entry| {
                         let name = entry.file_name().to_string_lossy();
-                        if entry.file_type().is_file()
+                        entry.file_type().is_file()
                             && name.starts_with("pack-")
                             && name.ends_with(".idx")
-                        {
-                            Some(pack::parse(entry.path()).unwrap())
-                        } else {
-                            None
-                        }
                     })
-                    .flatten()
+                    .flat_map(|entry| pack::parse(entry.path()).unwrap())
                     .collect();
                 objs = objs.union(&packs).cloned().collect();
             }
