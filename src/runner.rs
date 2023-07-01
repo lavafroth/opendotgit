@@ -287,48 +287,33 @@ impl Runner {
                 pathbuf![".git", "ORIG_HEAD"],
             ];
 
-            let mut refs_and_logs = [pathbuf![".git", "refs"], pathbuf![".git", "logs"]]
-                .iter()
-                .flat_map(|path| {
-                    WalkDir::new(path)
-                        .into_iter()
-                        .filter_map(|e| {
-                            e.ok().and_then(|entry| {
-                                if entry.file_type().is_file() {
-                                    Some(PathBuf::from(entry.path()))
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .collect::<Vec<PathBuf>>()
-                })
-                .collect::<Vec<PathBuf>>();
+            let search_paths = [pathbuf![".git", "refs"], pathbuf![".git", "logs"]];
+            let refs_and_logs = search_paths.iter().flat_map(|path| {
+                WalkDir::new(path)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|entry| entry.file_type().is_file())
+                    .map(|entry| PathBuf::from(entry.path()))
+            });
 
-            files.append(&mut refs_and_logs);
+            files.extend(refs_and_logs);
 
             let mut objs = HashSet::new();
             for filepath in files {
-                if filepath.exists() {
-                    for m in expression::OBJECT.captures_iter(&fs::read_to_string(filepath).await?)
-                    {
-                        if let Some(m) = m.get(2) {
-                            objs.insert(m.as_str().to_string());
-                        }
-                    }
-                }
+                let text = &fs::read_to_string(filepath).await?;
+                let matches = expression::OBJECT
+                    .captures_iter(text)
+                    .filter_map(|m| m.get(2))
+                    .map(|m| m.as_str().to_string());
+                objs.extend(matches);
             }
 
             let index = git2::Index::open(&pathbuf![".git", "index"])?;
-
-            for entry in index.iter() {
-                let oid = entry.id;
-                objs.insert(oid.to_string());
-            }
+            objs.extend(index.iter().map(|entry| entry.id.to_string()));
 
             let pack_file_dir = pathbuf![".git", "objects", "pack"];
             if pack_file_dir.is_dir() {
-                let packs: HashSet<_> = WalkDir::new(&pack_file_dir)
+                let packs = WalkDir::new(&pack_file_dir)
                     .into_iter()
                     .filter_map(|e| e.ok())
                     .filter(|entry| {
@@ -337,9 +322,8 @@ impl Runner {
                             && name.starts_with("pack-")
                             && name.ends_with(".idx")
                     })
-                    .flat_map(|entry| pack::parse(entry.path()).unwrap())
-                    .collect();
-                objs = objs.union(&packs).cloned().collect();
+                    .flat_map(|entry| pack::parse(entry.path()).unwrap());
+                objs.extend(packs);
             }
 
             objs.take("0000000000000000000000000000000000000000");
