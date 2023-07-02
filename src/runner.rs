@@ -1,7 +1,4 @@
-use crate::{
-    constants, expression, pack, string_vec,
-    webpage::{self, ResponseExt},
-};
+use crate::{constants, expression, pack, response::ResponseExt, string_vec, webpage};
 
 use color_eyre::{
     eyre::{bail, eyre, Result, WrapErr},
@@ -18,7 +15,6 @@ use log::{error, info, warn};
 use pathbuf::pathbuf;
 use std::{
     collections::HashSet,
-    io::Cursor,
     path::{Path, PathBuf},
 };
 use tokio::{
@@ -168,10 +164,8 @@ impl Runner {
         } else {
             bail!("Parent directory unavailable");
         }
-        let mut file = std::fs::File::create(path)?;
         let body = hyper::body::to_bytes(response).await?;
-        let mut content = Cursor::new(&body);
-        std::io::copy(&mut content, &mut file)?;
+        std::fs::write(path, &body)?;
         Ok(body)
     }
 
