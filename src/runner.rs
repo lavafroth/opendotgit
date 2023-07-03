@@ -34,7 +34,9 @@ pub struct Runner {
     jobs: usize,
     /// The HTTP(S) client used to retrieve content from the repository.
     client: Client<HttpsConnector<HttpConnector<GaiResolver>>, Body>,
+    /// Number of times to retry a failed request.
     retries: usize,
+    /// Timeout before all attempts for a request are cancelled.
     timeout: Duration,
 }
 
@@ -42,10 +44,10 @@ impl Runner {
     /// Recursively downloads all files in list.
     async fn recursive_download(&self, links: &[&str]) -> Result<()> {
         // First run through the links supplied
-        let mut branches = self.download_all(links).await?;
+        let mut branches = self.download_multiple(links).await;
         while !branches.is_empty() {
             // Download each file in the list concurrently up to the specified number of jobs.
-            branches = self.download_all(&branches).await?;
+            branches = self.download_multiple(&branches).await;
         }
         Ok(())
     }
@@ -110,9 +112,9 @@ impl Runner {
     }
 
     /// Downloads all files in list.
-    async fn download_all<S: AsRef<str>>(&self, list: &[S]) -> Result<Vec<String>> {
+    async fn download_multiple<S: AsRef<str>>(&self, list: &[S]) -> Vec<String> {
         // Download each file in the list concurrently up to the specified number of jobs.
-        Ok(stream::iter(list)
+        stream::iter(list)
             .map(|href| self.download(href.as_ref()))
             .buffer_unordered(self.jobs)
             .filter_map(|b| async {
@@ -121,7 +123,7 @@ impl Runner {
             })
             .flat_map(stream::iter)
             .collect::<Vec<_>>()
-            .await)
+            .await
     }
 
     /// Creates a new Runner instance with a given URL and number of jobs.
@@ -184,9 +186,8 @@ impl Runner {
             .collect::<Vec<_>>())
     }
 
-    /// Finds all references recursively from a given list and returns them.
-    async fn find_all_refs(&self, list: &[&str]) -> Result<()> {
-        let mut branches = stream::iter(list)
+    async fn find_multiple_refs<S: AsRef<str>>(&self, refs: &[S]) -> Vec<String> {
+        stream::iter(refs)
             .map(|href| self.find_refs(href))
             .buffer_unordered(self.jobs)
             .filter_map(|b| async {
@@ -195,21 +196,15 @@ impl Runner {
             })
             .flat_map(stream::iter) // Essentially a .flatten()
             .collect::<Vec<_>>()
-            .await;
-        while !branches.is_empty() {
-            branches = stream::iter(branches)
-                .map(|href| self.find_refs(href))
-                .buffer_unordered(self.jobs)
-                .filter_map(|b| async {
-                    b.map_err(|e| error!("Failed while fetching reference: {e}"))
-                        .ok()
-                })
-                .flat_map(stream::iter) // Essentially a .flatten()
-                .collect::<Vec<_>>()
-                .await;
-        }
+            .await
+    }
 
-        Ok(())
+    /// Finds all references recursively from a given list and returns them.
+    async fn find_all_refs(&self, list: &[&str]) {
+        let mut branches = self.find_multiple_refs(list).await;
+        while !branches.is_empty() {
+            branches = self.find_multiple_refs(&branches).await;
+        }
     }
 
     /// Runs the Runner instance with the specified parameters and performs a Git checkout.
@@ -245,9 +240,9 @@ impl Runner {
             self.recursive_download(&[".git", ".gitignore"]).await?;
         } else {
             info!("Fetching common files");
-            self.download_all(constants::KNOWN_FILES).await?;
+            self.download_multiple(constants::KNOWN_FILES).await;
             info!("Finding refs");
-            self.find_all_refs(constants::REF_FILES).await?;
+            self.find_all_refs(constants::REF_FILES).await;
 
             // read .git/objects/info/packs if exists
             //   for every sha1 hash, download .git/objects/pack/pack-%s.{idx,pack}
@@ -265,7 +260,7 @@ impl Runner {
                     }
                 }
             }
-            self.download_all(&jobs).await?;
+            self.download_multiple(&jobs).await;
 
             // For the contents of .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
             //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second match group
@@ -323,7 +318,7 @@ impl Runner {
                 .map(|obj| format!(".git/objects/{}/{}", &obj[0..2], &obj[2..]))
                 .collect::<Vec<_>>();
 
-            self.download_all(&object_paths).await?;
+            self.download_multiple(&object_paths).await;
         }
         info!("Performing a git checkout");
         checkout(ignore_errors)
@@ -341,7 +336,7 @@ fn checkout(ignore_errors: bool) -> Result<()> {
         Err(eyre!(
             "Checkout command did not exit cleanly, exit status: {status}"
         ))
-        .section("Some files from the repository's tree may be missing")?
+        .note("Some files from the repository's tree may be missing")?
     }
     Ok(())
 }
