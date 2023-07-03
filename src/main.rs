@@ -9,7 +9,6 @@ use url::Url;
 mod constants;
 mod expression;
 mod logging;
-mod macros;
 mod pack;
 mod response;
 mod runner;
