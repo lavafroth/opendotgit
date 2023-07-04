@@ -7,6 +7,7 @@ use color_eyre::{
 };
 use url::Url;
 mod constants;
+mod download;
 mod expression;
 mod logging;
 mod pack;
@@ -62,9 +63,7 @@ async fn main() -> Result<()> {
     std::env::set_current_dir(cli.output)?;
 
     // Spawn a new `Runner` instance with the specified URL and tasks.
-    runner::Runner::new(&cli.url, cli.jobs, cli.retries, cli.timeout)
-        .run()
-        .await?;
+    runner::run(&cli.url, cli.jobs, cli.retries, cli.timeout).await?;
 
     Ok(())
 }
