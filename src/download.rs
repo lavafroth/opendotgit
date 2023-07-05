@@ -60,7 +60,7 @@ impl Downloader {
     }
 
     pub async fn collect_links(&self, href: &str) -> Result<Vec<String>> {
-        let response = self.get(href).await?;
+        let response = self.fetch(href).await?;
         if !response.is_html() {
             warn!(
                 "{}{} responded without content type text/html",
@@ -85,8 +85,7 @@ impl Downloader {
             .await
     }
 
-    /// Returns the response from retrieving a resource at href.
-    pub async fn get(&self, href: &str) -> Result<Response<Body>> {
+    pub fn normalize_url(&self, href: &str) -> Result<hyper::Uri> {
         let mut url = self.url.clone();
         // Merge the segments of the URL with the segments in href to create the correct URL for the resource.
         let segments: Vec<&str> = url
@@ -95,21 +94,29 @@ impl Downloader {
             .chain(href.split('/'))
             .collect();
         url.set_path(&segments.join("/"));
-        let url_str: hyper::Uri = url.as_str().parse()?;
+        Ok(url.as_str().parse()?)
+    }
 
+    pub async fn fetch_raw_url(&self, uri: &hyper::Uri) -> Result<Response<Body>> {
+        let uri = uri.clone();
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .map(jitter)
             .take(self.retries);
 
         let retry_future = Retry::spawn(retry_strategy, || async {
-            self.client.get(url_str.clone()).await
+            self.client.get(uri.clone()).await
         });
         Ok(timeout(self.timeout, retry_future).await??)
     }
 
+    /// Returns the response from retrieving a resource at href.
+    pub async fn fetch(&self, href: &str) -> Result<Response<Body>> {
+        self.fetch_raw_url(&self.normalize_url(href)?).await
+    }
+
     /// Downloads a single file at href.
     pub async fn single<'a>(&self, href: &'a str) -> Result<Status<'a>> {
-        let res = self.get(href).await?;
+        let res = self.fetch(href).await?;
         let url = &self.url;
         let status = res.status();
         match status {
@@ -178,7 +185,7 @@ impl Downloader {
     /// Finds all references from the given href and returns them as a vector of strings.
     async fn refs<S: AsRef<str>>(&self, href: S) -> Result<Vec<String>> {
         let href = href.as_ref();
-        let response = self.get(href).await?;
+        let response = self.fetch(href).await?;
         let body = to_bytes(response).await?;
         self.write_bytes(href, &body).await?;
         let text = std::str::from_utf8(&body)?;

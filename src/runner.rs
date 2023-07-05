@@ -14,23 +14,24 @@ use walkdir::WalkDir;
 /// Runs the Runner instance with the specified parameters and performs a Git checkout.
 pub async fn run(url: &Url, jobs: usize, retries: usize, timeout: Duration) -> Result<()> {
     let download = Downloader::new(url, jobs, retries, timeout);
-    let response = download.get(".git/HEAD").await?;
+
+    let uri = download.normalize_url(".git/HEAD")?;
+    let response = download.fetch_raw_url(&uri).await?;
     response
         .verify()
-        .wrap_err(format!("While fetching {url}/.git/HEAD"))?;
+        .wrap_err(format!("While fetching {uri}"))?;
 
     let body = hyper::body::to_bytes(response).await?;
     let text = std::str::from_utf8(&body)?;
     if !expression::HEAD.is_match(text.trim()) {
         bail!("{url} is not a git HEAD");
     }
-    let path = ".git/";
-    let url_string = format!("{url}{path}");
-    info!("Testing {url_string}");
+    let uri = download.normalize_url(".git")?;
+    info!("Testing {uri}");
 
-    let response = download.get(path).await?;
+    let response = download.fetch_raw_url(&uri).await?;
     if !response.is_html() {
-        warn!("{url_string} responded without content type text/html")
+        warn!("{uri} responded without content type text/html")
     }
 
     let is_webpage_listing = webpage::list(response)
@@ -38,7 +39,7 @@ pub async fn run(url: &Url, jobs: usize, retries: usize, timeout: Duration) -> R
         .iter()
         .any(|filename| filename == "HEAD");
     if is_webpage_listing {
-        info!("Recursively downloading {url_string}");
+        info!("Recursively downloading {uri}");
         download.recursive(&[".git", ".gitignore"]).await?;
     } else {
         info!("Fetching common files");
