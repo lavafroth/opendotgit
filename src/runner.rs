@@ -1,4 +1,6 @@
-use crate::{constants, download::Downloader, expression, pack, response::ResponseExt, webpage};
+use crate::{
+    args::Args, constants, download::Downloader, expression, pack, response::ResponseExt, webpage,
+};
 
 use color_eyre::{
     eyre::{bail, eyre, Result, WrapErr},
@@ -7,13 +9,12 @@ use color_eyre::{
 use log::{info, warn};
 use pathbuf::pathbuf;
 use std::{collections::HashSet, path::PathBuf};
-use tokio::{fs, time::Duration};
-use url::Url;
+use tokio::fs;
 use walkdir::WalkDir;
 
-/// Runs the Runner instance with the specified parameters and performs a Git checkout.
-pub async fn run(url: &Url, jobs: usize, retries: usize, timeout: Duration) -> Result<()> {
-    let download = Downloader::new(url, jobs, retries, timeout);
+pub async fn run(args: Args) -> Result<()> {
+    let url = args.url.clone();
+    let download: Downloader = args.into();
 
     let uri = download.normalize_url(".git/HEAD")?;
     let response = download.fetch_raw_url(&uri).await?;
