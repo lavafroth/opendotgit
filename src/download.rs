@@ -1,4 +1,4 @@
-use crate::{expression, response::ResponseExt, webpage};
+use crate::{args::Args, expression, response::ResponseExt, webpage};
 
 use color_eyre::eyre::{bail, eyre, Result};
 use futures::{stream, StreamExt};
@@ -35,16 +35,37 @@ impl<'a> Status<'a> {
 }
 
 pub struct Downloader {
-    /// The URL of the Git repository to run against.
     pub url: Url,
-    /// The number of jobs to execute concurrently.
     pub jobs: usize,
     /// The HTTP(S) client used to retrieve content from the repository.
     pub client: Client<HttpsConnector<HttpConnector<GaiResolver>>, Body>,
-    /// Number of times to retry a failed request.
     pub retries: usize,
-    /// Timeout before all attempts for a request are cancelled.
     pub timeout: Duration,
+}
+
+impl From<Args> for Downloader {
+    fn from(value: Args) -> Self {
+        let mut url = value.url.clone();
+        // If there are URL segments, set the new path as the segments upto but not including ".git"
+        if let Some(segments) = url.path_segments() {
+            url.set_path(
+                segments
+                    .take_while(|&segment| segment != ".git")
+                    .collect::<Vec<_>>()
+                    .join("/")
+                    .trim_end_matches('/'),
+            );
+        }
+        // If there are no segments, an omitted ".git" segment after the URL is assumed.
+
+        Downloader {
+            url,
+            jobs: value.jobs,
+            client: Client::builder().build::<_, Body>(HttpsConnector::new()),
+            retries: value.retries,
+            timeout: value.timeout,
+        }
+    }
 }
 
 impl Downloader {
@@ -147,30 +168,6 @@ impl Downloader {
             })
             .collect::<Vec<_>>()
             .await
-    }
-
-    /// Creates a new Runner instance with a given URL and number of jobs.
-    pub fn new(url: &Url, jobs: usize, retries: usize, timeout: Duration) -> Downloader {
-        let mut url = url.clone();
-        // If there are URL segments, set the new path as the segments upto but not including ".git"
-        if let Some(segments) = url.path_segments() {
-            url.set_path(
-                segments
-                    .take_while(|&segment| segment != ".git")
-                    .collect::<Vec<_>>()
-                    .join("/")
-                    .trim_end_matches('/'),
-            );
-        }
-        // If there are no segments, an omitted ".git" segment after the URL is assumed.
-
-        Downloader {
-            url,
-            jobs,
-            client: Client::builder().build::<_, Body>(HttpsConnector::new()),
-            retries,
-            timeout,
-        }
     }
 
     /// Writes the body to a file after creating the parent directory if it doesn't exist already.
