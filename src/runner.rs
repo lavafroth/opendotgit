@@ -53,17 +53,20 @@ pub async fn run(args: Args) -> Result<()> {
         info!("Finding packs");
 
         let pack_path: PathBuf = pathbuf![".git", "objects", "info", "packs"];
-        let mut jobs = vec![];
         if pack_path.exists() {
-            for capture in expression::PACK.captures_iter(&fs::read_to_string(pack_path).await?) {
-                if let Some(sha1) = capture.get(1) {
-                    let sha1 = sha1.as_str();
-                    jobs.push(format!(".git/objects/pack/pack-{sha1}.idx"));
-                    jobs.push(format!(".git/objects/pack/pack-{sha1}.pack"));
-                }
-            }
+            let jobs: Vec<_> = expression::PACK
+                .captures_iter(&fs::read_to_string(pack_path).await?)
+                .filter_map(|capture| capture.get(1))
+                .map(|sha1| sha1.as_str())
+                .flat_map(|sha1| {
+                    vec![
+                        format!(".git/objects/pack/pack-{sha1}.idx"),
+                        format!(".git/objects/pack/pack-{sha1}.pack"),
+                    ]
+                })
+                .collect();
+            download.multiple(&jobs).await;
         }
-        download.multiple(&jobs).await;
 
         // For the contents of .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
         //   check if they match "(^|\s)([a-f0-9]{40})($|\s)" and get the second match group
