@@ -17,7 +17,7 @@ hyper-tls = "0.5.0"
 lazy_static = "1.4.0"
 log = "0.4.19"
 pathbuf = "0.3.1"
-regex = "1.9.1"
+regex = "1.9.3"
 soup = "0.5.1"
 tokio = { version = "1", features = ["full"] }
 tokio-retry = "0.3.0"
