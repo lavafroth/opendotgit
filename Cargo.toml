@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 byteorder = "1.4.3"
-clap = { version = "4.3.19", features = ["derive"] }
+clap = { version = "4.3.21", features = ["derive"] }
 color-eyre = "0.6.2"
 futures = "0.3.28"
 git2 = "0.17.2"
