@@ -3,6 +3,7 @@ name = "opendotgit"
 authors = ["Himadri Bhattacharjee <lavafroth@protonmail.com>"]
 description = "Dump git repository from open .git directories"
 version = "0.4.2"
+license = "GPL-3.0"
 edition = "2021"
 
 [dependencies]
