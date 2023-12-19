@@ -2,6 +2,8 @@
 
 A simple Rust tool to download and extract source code from misconfigured open `.git` directories.
 
+> This project is under maintenance. I hope to change the code soon to accommodate for hyper 1.0 which is a major roadblock. Contributions are welcome.
+
 #### Installation
 
 Binary releases will be available following the first stable release. For now,
@@ -44,9 +46,3 @@ Opendotgit will try its best to dump the source code from a `.git` directory reg
 it prohibits listing subdirectories. As long as the respective files like `.git/HEAD` can be accessed,
 opendotgit will switch to the blind strategy to infer from the known files and dump the repository
 that way.
-
-For the blind case where a .git directory does not list its contents:
-- [x] references are fetched
-- [x] object file names are collected from references
-- [ ] pack files are parsed for more object files
-- [ ] object files are fetched
