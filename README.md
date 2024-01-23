@@ -2,7 +2,7 @@
 
 A simple Rust tool to download and extract source code from misconfigured open `.git` directories.
 
-> This project is under maintenance. I hope to change the code soon to accommodate for hyper 1.0 which is a major roadblock. Contributions are welcome.
+> This project is under maintenance. Updates will be less frequent.
 
 #### Installation
 

@@ -1,14 +1,9 @@
 use crate::{args::Args, expression, response::ResponseExt, webpage};
 
-use color_eyre::eyre::{bail, eyre, Result};
+use color_eyre::eyre::{bail, eyre, Context, Result};
 use futures::{stream, StreamExt};
-use hyper::{
-    body::to_bytes,
-    client::{connect::dns::GaiResolver, HttpConnector},
-    Body, Client, Response, StatusCode,
-};
-use hyper_tls::HttpsConnector;
 use log::{error, warn};
+use reqwest::{header::LOCATION, redirect::Policy, Client, Response, StatusCode};
 use std::path::Path;
 use tokio::{
     fs,
@@ -38,7 +33,7 @@ pub struct Downloader {
     pub url: Url,
     pub jobs: usize,
     /// The HTTP(S) client used to retrieve content from the repository.
-    pub client: Client<HttpsConnector<HttpConnector<GaiResolver>>, Body>,
+    pub client: Client,
     pub retries: usize,
     pub timeout: Duration,
 }
@@ -57,11 +52,12 @@ impl From<Args> for Downloader {
             );
         }
         // If there are no segments, an omitted ".git" segment after the URL is assumed.
+        let client = Client::builder().redirect(Policy::none()).build().unwrap();
 
         Downloader {
             url,
             jobs: value.jobs,
-            client: Client::builder().build::<_, Body>(HttpsConnector::new()),
+            client,
             retries: value.retries,
             timeout: value.timeout,
         }
@@ -106,7 +102,7 @@ impl Downloader {
             .await
     }
 
-    pub fn normalize_url(&self, href: &str) -> Result<hyper::Uri> {
+    pub fn normalize_url(&self, href: &str) -> Result<url::Url> {
         let mut url = self.url.clone();
         // Merge the segments of the URL with the segments in href to create the correct URL for the resource.
         let segments: Vec<&str> = url
@@ -118,20 +114,20 @@ impl Downloader {
         Ok(url.as_str().parse()?)
     }
 
-    pub async fn fetch_raw_url(&self, uri: &hyper::Uri) -> Result<Response<Body>> {
+    pub async fn fetch_raw_url(&self, uri: &url::Url) -> Result<Response> {
         let uri = uri.clone();
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .map(jitter)
             .take(self.retries);
 
         let retry_future = Retry::spawn(retry_strategy, || async {
-            self.client.get(uri.clone()).await
+            self.client.get(uri.clone()).send().await
         });
         Ok(timeout(self.timeout, retry_future).await??)
     }
 
     /// Returns the response from retrieving a resource at href.
-    pub async fn fetch(&self, href: &str) -> Result<Response<Body>> {
+    pub async fn fetch(&self, href: &str) -> Result<Response> {
         self.fetch_raw_url(&self.normalize_url(href)?).await
     }
 
@@ -147,7 +143,13 @@ impl Downloader {
             }
             StatusCode::OK => {
                 // Write the contents of the response to disk.
-                self.write_bytes(href, &to_bytes(res).await?).await?;
+                if res.is_html() {
+                    warn!("{url}{href} responded with HTML, probably not found");
+                } else {
+                    self.write_bytes(href, &res.bytes().await?)
+                        .await
+                        .context(format!("unable to write bytes for {url}{href}"))?;
+                }
             }
             _ => {
                 warn!("{url}{href} responded with status code {status}");
@@ -175,19 +177,32 @@ impl Downloader {
         if let Some(parent) = path.as_ref().parent() {
             fs::create_dir_all(parent).await?;
             fs::write(path, body).await?;
+            Ok(())
+        } else {
+            bail!("Parent directory unavailable");
         }
-        bail!("Parent directory unavailable");
     }
 
     /// Finds all references from the given href and returns them as a vector of strings.
     async fn refs<S: AsRef<str>>(&self, href: S) -> Result<Vec<String>> {
-        let href = href.as_ref();
-        let response = self.fetch(href).await?;
-        let body = to_bytes(response).await?;
-        self.write_bytes(href, &body).await?;
-        let text = std::str::from_utf8(&body)?;
+        let mut href = href.as_ref().to_string();
+        let text = loop {
+            let response = self.fetch(&href).await?;
+            let status = response.status();
+            match status {
+                StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND => {
+                    if let Some(loc) = response.headers().get(LOCATION) {
+                        href = loc.to_str()?.to_string();
+                    }
+                }
+                StatusCode::OK => break response.text().await?,
+                _ => bail!("{href} returned status code {status}"),
+            }
+        };
+
+        self.write_bytes(href, &text.as_bytes()).await?;
         Ok(expression::REFS
-            .captures_iter(text)
+            .captures_iter(&text)
             .filter_map(|matched| matched.get(0))
             .map(|reference| reference.as_str())
             /* TODO: .filter(is_safe_path(reference)) */

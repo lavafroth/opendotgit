@@ -22,8 +22,7 @@ pub async fn run(args: Args) -> Result<()> {
         .verify()
         .wrap_err(format!("While fetching {uri}"))?;
 
-    let body = hyper::body::to_bytes(response).await?;
-    let text = std::str::from_utf8(&body)?;
+    let text = response.text().await?;
     if !expression::HEAD.is_match(text.trim()) {
         bail!("{url} is not a git HEAD");
     }
@@ -91,12 +90,14 @@ pub async fn run(args: Args) -> Result<()> {
 
         let mut objs = HashSet::new();
         for filepath in files {
-            let text = fs::read_to_string(filepath).await?;
-            let matches = expression::OBJECT
-                .captures_iter(&text)
-                .filter_map(|m| m.get(2))
-                .map(|m| m.as_str().to_string());
-            objs.extend(matches);
+            if filepath.exists() {
+                let text = fs::read_to_string(filepath).await?;
+                let matches = expression::OBJECT
+                    .captures_iter(&text)
+                    .filter_map(|m| m.get(2))
+                    .map(|m| m.as_str().to_string());
+                objs.extend(matches);
+            }
         }
 
         let index = git2::Index::open(&pathbuf![".git", "index"])?;

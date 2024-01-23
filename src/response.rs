@@ -1,7 +1,7 @@
 use color_eyre::{eyre::bail, Result};
-use hyper::{
+use reqwest::{
     header::{CONTENT_LENGTH, CONTENT_TYPE},
-    Body, Response, StatusCode,
+    Response, StatusCode,
 };
 /// Adds extra functionality to `hyper::Response<Body>`.
 pub trait ResponseExt {
@@ -12,7 +12,7 @@ pub trait ResponseExt {
     fn verify(&self) -> Result<()>;
 }
 
-impl ResponseExt for Response<Body> {
+impl ResponseExt for Response {
     /// Returns true if the response has a `Content-Type` header indicating it is HTML.
     fn is_html(&self) -> bool {
         self.headers()
