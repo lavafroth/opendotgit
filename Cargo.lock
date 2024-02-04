@@ -1031,9 +1031,9 @@ dependencies = [
 
 [[package]]
 name = "pathbuf"
-version = "0.3.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8992df7ccb4aa439069561f4d1f391ad59eb7a8ea718fef6e4623ae09f40e291"
+checksum = "cc5ef818343d9b62a8391bfbc8fbd449acf2e6ddd2f1a9aede0eae4c7d91c25c"
 
 [[package]]
 name = "percent-encoding"
